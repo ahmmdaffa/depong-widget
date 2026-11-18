@@ -22,6 +22,7 @@ import {
   IconSend,
   IconX,
 } from "./Icons";
+import { InlineLoader } from "./LoadingScreen";
 
 interface CapturedPhoto {
   blob: Blob;
@@ -635,7 +636,7 @@ export default function CameraView({
                 <p className="text-xs text-muted">Atau pilih foto dari galeri ↓</p>
               </>
             ) : (
-              <p className="text-sm text-muted">Membuka kamera…</p>
+              <InlineLoader label="Membuka kamera…" />
             )}
           </div>
         )}

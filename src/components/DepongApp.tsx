@@ -36,6 +36,7 @@ import {
   IconStack,
   IconUsers,
 } from "./Icons";
+import { FullPageLoader } from "./LoadingScreen";
 import MemoriesView from "./MemoriesView";
 import ProfileSheet, { type InstallPromptEvent } from "./ProfileSheet";
 
@@ -294,11 +295,7 @@ export default function DepongApp() {
 
   // ---------- Render Loading / Auth ----------
   if (loadingAuth) {
-    return (
-      <div className="flex min-h-dvh items-center justify-center bg-ink text-sm text-muted">
-        Memuat Depong…
-      </div>
-    );
+    return <FullPageLoader />;
   }
 
   if (!profile) {

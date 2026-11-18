@@ -6,6 +6,7 @@ import { timeAgo } from "@/lib/format";
 import type { Moment, PublicProfile, Reply } from "@/lib/types";
 import Avatar from "./Avatar";
 import { IconTrash } from "./Icons";
+import { InlineLoader } from "./LoadingScreen";
 import Sheet from "./Sheet";
 
 export default function ActivitySheet({
@@ -82,7 +83,7 @@ export default function ActivitySheet({
         Balasan ({replies?.length ?? "…"})
       </h3>
       {replies === null ? (
-        <p className="text-sm text-muted">Memuat…</p>
+        <InlineLoader label="Memuat balasan…" />
       ) : replies.length === 0 ? (
         <p className="rounded-2xl bg-panel-2 p-3 text-sm text-muted">Belum ada balasan.</p>
       ) : (

@@ -30,6 +30,7 @@ import {
   IconUsers,
   IconX,
 } from "./Icons";
+import { InlineLoader } from "./LoadingScreen";
 
 type AdminSection = "accounts" | "photos";
 type FilterPeriod = "all" | "today" | "week";
@@ -682,7 +683,7 @@ export default function AdminDashboard() {
               </div>
 
               {loading ? (
-                <div className="py-12 text-center text-sm text-muted">Memuat data akun…</div>
+                <InlineLoader label="Memuat data akun…" />
               ) : filteredUsers.length === 0 ? (
                 <div className="py-12 text-center text-sm text-muted">
                   Belum ada akun terdaftar yang cocok dengan pencarian.
@@ -847,7 +848,7 @@ export default function AdminDashboard() {
             />
 
             {loading ? (
-              <div className="py-12 text-center text-sm text-muted">Memuat galeri foto…</div>
+              <InlineLoader label="Memuat galeri foto…" />
             ) : filteredPhotos.length === 0 ? (
               <div className="py-16 text-center space-y-2">
                 <div className="text-3xl">🖼️</div>
