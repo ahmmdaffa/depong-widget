@@ -1,0 +1,289 @@
+"use client";
+
+import { useEffect, useMemo, useRef, useState } from "react";
+import { clockTime, timeAgo } from "@/lib/format";
+import type { Moment, PublicProfile } from "@/lib/types";
+import Avatar from "./Avatar";
+import { IconSend, IconVolumeOff, IconVolumeOn } from "./Icons";
+import { MomentMedia } from "./MomentMedia";
+
+const QUICK_EMOJIS = ["💛", "🔥", "😍"];
+
+interface FloatingEmoji {
+  id: number;
+  emoji: string;
+  left: number;
+  delay: number;
+}
+
+export default function FeedView({
+  moments,
+  userId,
+  focusId,
+  onFocusHandled,
+  onReact,
+  onReply,
+  onOpenActivity,
+  onOpenCamera,
+  onOpenFriends,
+}: {
+  moments: Moment[];
+  userId: string;
+  focusId: string | null;
+  onFocusHandled: () => void;
+  onReact: (moment: Moment, emoji: string) => void;
+  onReply: (moment: Moment, body: string) => Promise<boolean>;
+  onOpenActivity: (moment: Moment) => void;
+  onOpenCamera: () => void;
+  onOpenFriends: () => void;
+}) {
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const [activeId, setActiveId] = useState<string | null>(moments[0]?.id ?? null);
+  const [muted, setMuted] = useState(true);
+
+  // Deteksi kartu yang sedang terlihat → auto-play video
+  useEffect(() => {
+    const root = scrollRef.current;
+    if (!root) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (entry.isIntersecting) setActiveId((entry.target as HTMLElement).dataset.id ?? null);
+        }
+      },
+      { root, threshold: 0.6 },
+    );
+    root.querySelectorAll<HTMLElement>("[data-id]").forEach((el) => observer.observe(el));
+    return () => observer.disconnect();
+  }, [moments]);
+
+  // Lompat ke momen tertentu (dari Memories)
+  useEffect(() => {
+    if (!focusId) return;
+    const el = scrollRef.current?.querySelector<HTMLElement>(`[data-id="${focusId}"]`);
+    el?.scrollIntoView({ behavior: "instant" as ScrollBehavior, block: "start" });
+    onFocusHandled();
+  }, [focusId, onFocusHandled]);
+
+  if (moments.length === 0) {
+    return (
+      <div className="flex h-full flex-col items-center justify-center gap-4 px-8 pb-28 text-center">
+        <div className="flex h-20 w-20 items-center justify-center rounded-[28px] bg-panel-2 text-4xl">📭</div>
+        <div>
+          <h2 className="text-lg font-bold">Belum ada momen</h2>
+          <p className="mt-1 text-sm text-muted">
+            Tambah sahabat lewat kode undangan, lalu kirim foto atau video 7 detik pertamamu.
+          </p>
+        </div>
+        <div className="flex gap-2">
+          <button onClick={onOpenFriends} className="rounded-full bg-panel-2 px-4 py-2 text-sm font-semibold">
+            Tambah sahabat
+          </button>
+          <button onClick={onOpenCamera} className="rounded-full bg-gold px-4 py-2 text-sm font-bold text-black">
+            Buka kamera
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div ref={scrollRef} className="h-full snap-y snap-mandatory overflow-y-auto no-scrollbar">
+      {moments.map((m) => (
+        <FeedItem
+          key={m.id}
+          moment={m}
+          isOwn={m.user_id === userId}
+          active={m.id === activeId}
+          muted={muted}
+          onToggleMute={() => setMuted((v) => !v)}
+          onReact={onReact}
+          onReply={onReply}
+          onOpenActivity={onOpenActivity}
+        />
+      ))}
+    </div>
+  );
+}
+
+function FeedItem({
+  moment,
+  isOwn,
+  active,
+  muted,
+  onToggleMute,
+  onReact,
+  onReply,
+  onOpenActivity,
+}: {
+  moment: Moment;
+  isOwn: boolean;
+  active: boolean;
+  muted: boolean;
+  onToggleMute: () => void;
+  onReact: (moment: Moment, emoji: string) => void;
+  onReply: (moment: Moment, body: string) => Promise<boolean>;
+  onOpenActivity: (moment: Moment) => void;
+}) {
+  const [floating, setFloating] = useState<FloatingEmoji[]>([]);
+  const [progress, setProgress] = useState(0);
+  const [reply, setReply] = useState("");
+  const [sending, setSending] = useState(false);
+  const counter = useRef(0);
+
+  const reactionSummary = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const r of moment.reactions) map.set(r.emoji, (map.get(r.emoji) ?? 0) + 1);
+    return [...map.entries()].sort((a, b) => b[1] - a[1]);
+  }, [moment.reactions]);
+
+  function burst(emoji: string) {
+    const batch: FloatingEmoji[] = Array.from({ length: 6 }, (_, i) => ({
+      id: ++counter.current,
+      emoji,
+      left: 10 + Math.random() * 80,
+      delay: i * 0.07,
+    }));
+    setFloating((prev) => [...prev, ...batch]);
+    const ids = new Set(batch.map((b) => b.id));
+    setTimeout(() => setFloating((prev) => prev.filter((f) => !ids.has(f.id))), 2100);
+  }
+
+  function react(emoji: string) {
+    burst(emoji);
+    onReact(moment, emoji);
+  }
+
+  async function submitReply() {
+    const body = reply.trim();
+    if (!body || sending) return;
+    setSending(true);
+    const ok = await onReply(moment, body);
+    setSending(false);
+    if (ok) {
+      setReply("");
+      burst("💬");
+    }
+  }
+
+  const author: PublicProfile | null = moment.profile;
+
+  return (
+    <section data-id={moment.id} className="flex h-full snap-start flex-col justify-center gap-3 px-4 pb-28">
+      <div className="relative aspect-square w-full overflow-hidden rounded-[44px] border border-white/10 bg-panel shadow-2xl">
+        <MomentMedia moment={moment} active={active} muted={muted} onProgress={setProgress} />
+
+        {/* Emoji melayang */}
+        <div className="pointer-events-none absolute inset-0 overflow-hidden">
+          {floating.map((f) => (
+            <span
+              key={f.id}
+              className="animate-float-emoji absolute bottom-12 text-4xl"
+              style={{ left: `${f.left}%`, animationDelay: `${f.delay}s` }}
+            >
+              {f.emoji}
+            </span>
+          ))}
+        </div>
+
+        {moment.media_type === "video" && (
+          <>
+            <div className="absolute inset-x-4 top-4 flex items-center justify-between">
+              <span className="flex items-center gap-1.5 rounded-full bg-black/55 px-3 py-1.5 text-xs font-semibold backdrop-blur-md">
+                <span className="h-2 w-2 rounded-full bg-gold" />
+                Video {moment.duration ? `${Number(moment.duration).toFixed(0)}s` : ""}
+              </span>
+              <button
+                onClick={onToggleMute}
+                className="flex h-9 w-9 items-center justify-center rounded-full bg-black/55 backdrop-blur-md"
+                aria-label={muted ? "Nyalakan suara" : "Matikan suara"}
+              >
+                {muted ? <IconVolumeOff size={16} /> : <IconVolumeOn size={16} />}
+              </button>
+            </div>
+            <div className="absolute inset-x-0 bottom-0 h-1 bg-white/15">
+              <div className="h-full bg-gold" style={{ width: `${(active ? progress : 0) * 100}%` }} />
+            </div>
+          </>
+        )}
+
+        <div className="absolute inset-x-0 bottom-5 flex flex-col items-center gap-1.5 px-6">
+          {moment.caption && (
+            <span className="max-w-full truncate rounded-full bg-black/55 px-4 py-2 text-sm font-semibold backdrop-blur-md">
+              {moment.caption}
+            </span>
+          )}
+        </div>
+
+        {!isOwn && reactionSummary.length > 0 && (
+          <span className="absolute right-4 bottom-5 rounded-full bg-black/55 px-2 py-1 text-xs font-semibold backdrop-blur-md">
+            {reactionSummary[0][0]} {moment.reactions.length}
+          </span>
+        )}
+      </div>
+
+      {/* Pengirim */}
+      <div className="flex items-center justify-center gap-2">
+        <Avatar profile={author} size={26} />
+        <span className="text-sm font-bold">{isOwn ? "Kamu" : (author?.display_name ?? "Sahabat")}</span>
+        <span className="text-sm text-muted">{timeAgo(moment.created_at)}</span>
+        <span className="rounded-full bg-panel-2 px-2 py-0.5 text-xs text-muted">{clockTime(moment.created_at)}</span>
+      </div>
+
+      {/* Balas / Aktivitas */}
+      {isOwn ? (
+        <button
+          onClick={() => onOpenActivity(moment)}
+          className="mx-auto flex items-center gap-2 rounded-full border border-white/10 bg-panel-2 px-4 py-2.5 text-sm"
+        >
+          <span className="font-semibold">Aktivitas</span>
+          {reactionSummary.length === 0 ? (
+            <span className="text-muted">Belum ada reaksi</span>
+          ) : (
+            <span className="flex items-center gap-1.5">
+              {reactionSummary.slice(0, 4).map(([emoji, count]) => (
+                <span key={emoji}>
+                  {emoji}
+                  <span className="ml-0.5 text-xs text-muted">{count}</span>
+                </span>
+              ))}
+            </span>
+          )}
+        </button>
+      ) : (
+        <div className="flex items-center gap-2 rounded-full border border-white/10 bg-panel-2 py-1.5 pr-1.5 pl-4">
+          <input
+            value={reply}
+            onChange={(e) => setReply(e.target.value.slice(0, 200))}
+            onKeyDown={(e) => e.key === "Enter" && submitReply()}
+            placeholder={`Balas ${author?.display_name ?? ""}…`}
+            className="min-w-0 flex-1 bg-transparent text-sm text-white placeholder-white/40 outline-none"
+          />
+          {reply.trim() ? (
+            <button
+              onClick={submitReply}
+              disabled={sending}
+              className="flex h-9 w-9 items-center justify-center rounded-full bg-gold text-black"
+              aria-label="Kirim balasan"
+            >
+              <IconSend size={16} />
+            </button>
+          ) : (
+            <div className="flex items-center gap-1">
+              {QUICK_EMOJIS.map((emoji) => (
+                <button
+                  key={emoji}
+                  onClick={() => react(emoji)}
+                  className="flex h-9 w-9 items-center justify-center rounded-full text-xl transition hover:scale-125 active:scale-90"
+                  aria-label={`Reaksi ${emoji}`}
+                >
+                  {emoji}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </section>
+  );
+}

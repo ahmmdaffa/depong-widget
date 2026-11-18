@@ -1,26 +1,105 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
+@theme {
+  --color-ink: #050505;
+  --color-panel: #161618;
+  --color-panel-2: #222226;
+  --color-panel-3: #2c2c31;
+  --color-gold: #f5c451;
+  --color-gold-soft: rgb(245 196 81 / 0.18);
+  --color-muted: #a1a1aa;
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
+  --font-sans:
+    ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+  --animate-float-emoji: float-emoji 1.6s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+  --animate-shutter-flash: shutter-flash 0.35s ease-out forwards;
+  --animate-sheet-up: sheet-up 0.25s cubic-bezier(0.22, 1, 0.36, 1);
+  --animate-toast-in: toast-in 0.2s ease-out;
+
+  @keyframes float-emoji {
+    0% {
+      opacity: 0;
+      transform: translateY(20px) scale(0.5) rotate(-8deg);
+    }
+    20% {
+      opacity: 1;
+      transform: translateY(-10px) scale(1.2) rotate(6deg);
+    }
+    80% {
+      opacity: 0.95;
+      transform: translateY(-140px) scale(1) rotate(-6deg);
+    }
+    100% {
+      opacity: 0;
+      transform: translateY(-190px) scale(0.85) rotate(10deg);
+    }
+  }
+
+  @keyframes shutter-flash {
+    0% {
+      opacity: 0.9;
+    }
+    100% {
+      opacity: 0;
+    }
+  }
+
+  @keyframes sheet-up {
+    from {
+      transform: translateY(100%);
+    }
+    to {
+      transform: translateY(0);
+    }
+  }
+
+  @keyframes toast-in {
+    from {
+      opacity: 0;
+      transform: translateY(-8px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
   }
 }
 
+@utility no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+  &::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+@utility pt-safe {
+  padding-top: env(safe-area-inset-top, 0px);
+}
+
+@utility pb-safe {
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+html,
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  height: 100%;
+  background: #000;
+  color: #fafafa;
+}
+
+body {
+  overscroll-behavior: none;
+  -webkit-tap-highlight-color: transparent;
+  -webkit-font-smoothing: antialiased;
+}
+
+button {
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
 }
