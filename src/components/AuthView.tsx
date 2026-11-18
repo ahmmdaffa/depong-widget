@@ -1,21 +1,26 @@
 "use client";
 
-import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { errorMessage } from "@/lib/api";
-import { loginLocalAccount, registerLocalAccount } from "@/lib/backendStore";
+import {
+  loginLocalAccount,
+  registerLocalAccount,
+  setSuperAdminAuthenticated,
+  SUPER_ADMIN_EMAIL,
+  verifySuperAdminCredentials,
+} from "@/lib/backendStore";
 import { getSupabase, isSupabaseConfigured } from "@/lib/supabase";
 import type { Profile } from "@/lib/types";
 
 export default function AuthView({
-  onEnterDemo,
   onAuthenticated,
   notify,
 }: {
-  onEnterDemo: () => void;
   onAuthenticated: (profile: Profile) => void;
   notify: (msg: string) => void;
 }) {
+  const router = useRouter();
   const [mode, setMode] = useState<"login" | "register">("register");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -28,13 +33,29 @@ export default function AuthView({
     if (busy) return;
     setBusy(true);
     try {
-      // Gunakan backend terintegrasi apabila Supabase eksternal belum dipasang
+      // Cek apabila yang login adalah akun Super Admin
+      if (mode === "login" && email.trim().toLowerCase() === SUPER_ADMIN_EMAIL) {
+        if (!verifySuperAdminCredentials(email, password)) {
+          throw new Error("Password Super Admin salah.");
+        }
+        setSuperAdminAuthenticated(true);
+        notify("Selamat datang, Super Admin 🛡️");
+        router.push("/admin");
+        return;
+      }
+
+      // Cegah pendaftaran user biasa menggunakan email khusus Super Admin
+      if (mode === "register" && email.trim().toLowerCase() === SUPER_ADMIN_EMAIL) {
+        throw new Error("Email ini dikhususkan untuk Super Admin. Silakan masuk di tab Masuk.");
+      }
+
       if (!isSupabaseConfigured) {
         if (mode === "login") {
           const prof = await loginLocalAccount({
             emailOrUsername: email,
             password,
           });
+          setSuperAdminAuthenticated(false);
           notify(`Selamat datang kembali, ${prof.display_name} 💛`);
           onAuthenticated(prof);
         } else {
@@ -44,7 +65,8 @@ export default function AuthView({
             email,
             password,
           });
-          notify(`Akun @${prof.username} berhasil dibuat & terhubung ke Admin 💛`);
+          setSuperAdminAuthenticated(false);
+          notify(`Akun @${prof.username} berhasil dibuat 💛`);
           onAuthenticated(prof);
         }
         return;
@@ -193,24 +215,6 @@ export default function AuthView({
               {busy ? "Memproses…" : mode === "login" ? "Masuk ke Depong" : "Daftar & Masuk"}
             </button>
           </form>
-        </div>
-
-        {/* Shortcut Masuk Instan & Dashboard Admin */}
-        <div className="flex items-center justify-between gap-2.5 rounded-3xl border border-white/10 bg-panel px-4 py-3">
-          <button
-            type="button"
-            onClick={onEnterDemo}
-            className="text-xs font-bold text-white/85 underline decoration-gold/60 underline-offset-4 hover:text-gold"
-          >
-            Masuk Cepat (Akun Daffa)
-          </button>
-
-          <Link
-            href="/admin"
-            className="inline-flex items-center gap-1.5 rounded-full bg-gold/15 px-3.5 py-1.5 text-xs font-extrabold text-gold transition hover:bg-gold hover:text-black"
-          >
-            <span>🛡️ Dashboard Admin</span>
-          </Link>
         </div>
       </div>
     </div>

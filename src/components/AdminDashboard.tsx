@@ -3,7 +3,14 @@
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { deleteAdminUser, errorMessage, fetchAdminUsers } from "@/lib/api";
-import { registerLocalAccount, subscribeStoreChanges } from "@/lib/backendStore";
+import {
+  isSuperAdminAuthenticated,
+  registerLocalAccount,
+  setSuperAdminAuthenticated,
+  subscribeStoreChanges,
+  SUPER_ADMIN_EMAIL,
+  verifySuperAdminCredentials,
+} from "@/lib/backendStore";
 import { createDemoAdminUsers } from "@/lib/demoData";
 import { clockTime, dayKey, timeAgo } from "@/lib/format";
 import { getSupabase, isSupabaseConfigured } from "@/lib/supabase";
@@ -14,6 +21,7 @@ import {
   IconChevronLeft,
   IconCopy,
   IconDownload,
+  IconLogout,
   IconTrash,
   IconUsers,
   IconX,
@@ -22,12 +30,11 @@ import {
 type FilterPeriod = "all" | "today" | "week" | "with_video";
 type SortBy = "newest" | "oldest" | "most_moments" | "name";
 
-const ADMIN_PIN = process.env.NEXT_PUBLIC_ADMIN_PIN ?? "";
-
 export default function AdminDashboard() {
-  const [unlocked, setUnlocked] = useState(!ADMIN_PIN);
-  const [pinInput, setPinInput] = useState("");
-  const [pinError, setPinError] = useState(false);
+  const [unlocked, setUnlocked] = useState(false);
+  const [adminEmail, setAdminEmail] = useState("");
+  const [adminPassword, setAdminPassword] = useState("");
+  const [authError, setAuthError] = useState<string | null>(null);
 
   const [users, setUsers] = useState<AdminUserSummary[]>(() => createDemoAdminUsers());
   const [loading, setLoading] = useState(true);
@@ -65,6 +72,15 @@ export default function AdminDashboard() {
       setLoading(false);
     }
   }, [notify]);
+
+  useEffect(() => {
+    const t = window.setTimeout(() => {
+      if (isSuperAdminAuthenticated()) {
+        setUnlocked(true);
+      }
+    }, 0);
+    return () => window.clearTimeout(t);
+  }, []);
 
   useEffect(() => {
     if (!unlocked) return;
@@ -257,45 +273,77 @@ export default function AdminDashboard() {
     }
   }
 
-  // ---------- Layar Kunci PIN Opsional ----------
+  // ---------- Layar Login Khusus Super Admin ----------
   if (!unlocked) {
     return (
       <div className="flex min-h-dvh items-center justify-center bg-ink px-6 text-white">
         <form
           onSubmit={(e) => {
             e.preventDefault();
-            if (pinInput === ADMIN_PIN) {
+            if (verifySuperAdminCredentials(adminEmail, adminPassword)) {
+              setSuperAdminAuthenticated(true);
               setUnlocked(true);
-              setPinError(false);
+              setAuthError(null);
             } else {
-              setPinError(true);
+              setAuthError(
+                "Akses ditolak. Hanya akun Super Admin yang diizinkan membuka Dashboard Admin.",
+              );
             }
           }}
-          className="w-full max-w-sm space-y-4 rounded-[32px] border border-white/10 bg-panel p-6 text-center"
+          className="w-full max-w-sm space-y-4 rounded-[32px] border border-white/10 bg-panel p-6 text-center shadow-2xl"
         >
           <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl border-2 border-gold bg-panel-2 text-gold">
             <IconUsers size={24} />
           </div>
           <div>
-            <h1 className="text-xl font-extrabold">Admin Depong</h1>
-            <p className="mt-1 text-xs text-muted">Masukkan PIN Admin untuk melihat daftar akun</p>
+            <h1 className="text-xl font-extrabold">Super Admin Depong</h1>
+            <p className="mt-1 text-xs text-muted">
+              Halaman ini hanya dapat diakses oleh akun Super Admin
+            </p>
           </div>
-          <input
-            type="password"
-            value={pinInput}
-            onChange={(e) => setPinInput(e.target.value)}
-            placeholder="PIN Admin"
-            className="w-full rounded-2xl border border-white/10 bg-panel-2 px-4 py-3 text-center font-mono text-sm outline-none focus:border-gold"
-          />
-          {pinError && <p className="text-xs font-semibold text-red-400">PIN salah, coba lagi.</p>}
+
+          <div className="space-y-3 text-left">
+            <div>
+              <label className="mb-1 block text-xs font-semibold text-muted">
+                Email Super Admin
+              </label>
+              <input
+                type="email"
+                required
+                value={adminEmail}
+                onChange={(e) => setAdminEmail(e.target.value)}
+                placeholder="Email Super Admin"
+                className="w-full rounded-2xl border border-white/10 bg-panel-2 px-4 py-2.5 text-sm text-white outline-none focus:border-gold"
+              />
+            </div>
+
+            <div>
+              <label className="mb-1 block text-xs font-semibold text-muted">Password</label>
+              <input
+                type="password"
+                required
+                value={adminPassword}
+                onChange={(e) => setAdminPassword(e.target.value)}
+                placeholder="Password Super Admin"
+                className="w-full rounded-2xl border border-white/10 bg-panel-2 px-4 py-2.5 text-sm text-white outline-none focus:border-gold"
+              />
+            </div>
+          </div>
+
+          {authError && (
+            <p className="rounded-2xl border border-red-500/30 bg-red-500/10 p-2.5 text-xs font-semibold text-red-400">
+              {authError}
+            </p>
+          )}
+
           <button
             type="submit"
-            className="w-full rounded-full bg-gold py-3 text-sm font-extrabold text-black"
+            className="w-full rounded-full bg-gold py-3 text-sm font-extrabold text-black transition active:scale-98"
           >
-            Buka Dashboard
+            Masuk sebagai Super Admin
           </button>
           <Link href="/" className="block text-xs text-muted hover:text-white">
-            ← Kembali ke Aplikasi
+            ← Kembali ke Halaman Utama
           </Link>
         </form>
       </div>
@@ -320,10 +368,10 @@ export default function AdminDashboard() {
             </div>
             <div>
               <div className="flex items-center gap-2">
-                <h1 className="text-lg font-extrabold tracking-tight">Depong Admin</h1>
+                <h1 className="text-lg font-extrabold tracking-tight">Depong Super Admin</h1>
                 <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/15 px-2.5 py-0.5 text-[11px] font-extrabold text-emerald-400">
                   <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
-                  AKTIF & TERINTEGRASI
+                  {SUPER_ADMIN_EMAIL}
                 </span>
               </div>
               <p className="text-xs text-muted">
@@ -362,6 +410,19 @@ export default function AdminDashboard() {
               <IconCamera size={15} />
               <span>Buka App</span>
             </Link>
+
+            <button
+              onClick={() => {
+                setSuperAdminAuthenticated(false);
+                setUnlocked(false);
+                setAdminPassword("");
+              }}
+              className="flex items-center gap-1.5 rounded-full border border-red-500/30 bg-red-500/10 px-3.5 py-2 text-xs font-bold text-red-400 transition hover:bg-red-500 hover:text-white"
+              title="Keluar dari Super Admin"
+            >
+              <IconLogout size={15} />
+              <span>Keluar</span>
+            </button>
           </div>
         </div>
       </header>

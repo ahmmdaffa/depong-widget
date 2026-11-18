@@ -86,6 +86,19 @@ Dirancang dengan estetika **Locket Dark Mode + Gold Accent** (`#050505` & `#F5C4
 
 ---
 
+## 🔐 Catatan Akses Dashboard Super Admin
+
+Sesuai kebijakan privasi & keamanan aplikasi:
+1. **Tombol/teks Dashboard Admin disembunyikan sepenuhnya dari tampilan User biasa** (baik di halaman Login/Register, Top Bar kamera/feed, maupun di menu Profil pengguna).
+2. **Halaman Dashboard Admin (`/admin`) dikunci khusus hanya untuk 1 akun Super Admin** dan **tidak dapat dibuka menggunakan akun pengguna lain**.
+3. **Cara Mengakses Dashboard Super Admin:**
+   - Masuk melalui tab **Masuk** di halaman utama (`/`) atau buka langsung URL `/admin`, lalu gunakan kredensial Super Admin berikut:
+     - **Email Super Admin:** `admin123@gmail.com`
+     - **Password:** `admin123`
+   - Saat login dengan kredensial di atas pada halaman utama (`/`), sistem akan otomatis mengarahkan Anda langsung ke halaman **Dashboard Super Admin (`/admin`)**.
+
+---
+
 ## 🛠️ Cara Menjalankan di Lokal
 
 1. **Install dependencies:**

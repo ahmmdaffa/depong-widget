@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   addFriendByCode,
@@ -13,11 +12,9 @@ import {
 } from "@/lib/api";
 import {
   getActiveSessionUserId,
-  loginLocalAccount,
   setActiveSessionUserId,
   subscribeStoreChanges,
 } from "@/lib/backendStore";
-import { DEMO_PROFILE } from "@/lib/demoData";
 import { getSupabase, isSupabaseConfigured } from "@/lib/supabase";
 import type {
   FeedFilter,
@@ -214,21 +211,7 @@ export default function DepongApp() {
     };
   }, [userId, reloadAll]);
 
-  // ---------- Masuk Cepat / Handler Login ----------
-  async function handleQuickLogin() {
-    try {
-      const prof = await loginLocalAccount({ emailOrUsername: DEMO_PROFILE.username });
-      setUserId(prof.id);
-      setProfile(prof);
-      setEmail(prof.email ?? "ahmmdaffa280904@gmail.com");
-      await reloadAll(prof.id);
-      setTab("camera");
-      notify(`Masuk sebagai ${prof.display_name} 💛`);
-    } catch (err) {
-      notify(errorMessage(err));
-    }
-  }
-
+  // ---------- Handler Login ----------
   async function handleAuthenticated(prof: Profile) {
     setUserId(prof.id);
     setProfile(prof);
@@ -309,7 +292,6 @@ export default function DepongApp() {
     return (
       <>
         <AuthView
-          onEnterDemo={() => void handleQuickLogin()}
           onAuthenticated={(prof) => void handleAuthenticated(prof)}
           notify={notify}
         />
@@ -392,14 +374,6 @@ export default function DepongApp() {
               <span>{friends.length} Friends</span>
             </button>
           )}
-
-          <Link
-            href="/admin"
-            className="rounded-full border border-gold/35 bg-gold/15 px-2.5 py-1.5 text-[11px] font-extrabold text-gold transition hover:bg-gold hover:text-black"
-            title="Buka Dashboard Admin"
-          >
-            Admin
-          </Link>
         </div>
 
         {/* Kanan: Profil (diberi p-1 supaya ring-offset tidak terpotong) */}

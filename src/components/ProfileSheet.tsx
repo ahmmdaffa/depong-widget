@@ -121,16 +121,9 @@ export default function ProfileSheet({
         )}
       </div>
 
-      <a
-        href="/admin"
-        className="mt-5 flex w-full items-center justify-center gap-2 rounded-full border border-gold/30 bg-panel-2 py-3 text-sm font-bold text-gold"
-      >
-        🛡️ Dashboard Admin
-      </a>
-
       <button
         onClick={onLogout}
-        className="mt-2.5 flex w-full items-center justify-center gap-2 rounded-full bg-panel-2 py-3 text-sm font-semibold text-red-400"
+        className="mt-5 flex w-full items-center justify-center gap-2 rounded-full bg-panel-2 py-3 text-sm font-semibold text-red-400"
       >
         <IconLogout size={16} /> Keluar / Ganti Akun
       </button>

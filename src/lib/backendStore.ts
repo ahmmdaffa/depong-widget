@@ -10,7 +10,32 @@ import type {
 
 const STORAGE_KEY = "depong_integrated_store_v1";
 const SESSION_KEY = "depong_active_user_id_v1";
+const SUPER_ADMIN_KEY = "depong_super_admin_session_v1";
 const CHANNEL_NAME = "depong_live_channel_v1";
+
+export const SUPER_ADMIN_EMAIL = "admin123@gmail.com";
+export const SUPER_ADMIN_PASSWORD = "admin123";
+
+export function isSuperAdminAuthenticated(): boolean {
+  if (typeof window === "undefined") return false;
+  return window.localStorage.getItem(SUPER_ADMIN_KEY) === SUPER_ADMIN_EMAIL;
+}
+
+export function setSuperAdminAuthenticated(active: boolean): void {
+  if (typeof window === "undefined") return;
+  if (active) {
+    window.localStorage.setItem(SUPER_ADMIN_KEY, SUPER_ADMIN_EMAIL);
+  } else {
+    window.localStorage.removeItem(SUPER_ADMIN_KEY);
+  }
+}
+
+export function verifySuperAdminCredentials(email: string, password: string): boolean {
+  return (
+    email.trim().toLowerCase() === SUPER_ADMIN_EMAIL &&
+    password === SUPER_ADMIN_PASSWORD
+  );
+}
 
 function createInitialLocalStore(): StoreShape {
   const seedUsers = createDemoAdminUsers(Date.now());
