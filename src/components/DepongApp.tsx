@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   addFriendByCode,
@@ -10,11 +11,16 @@ import {
   fetchProfile,
   sendReply,
 } from "@/lib/api";
-import { createInitialDemoMoments, DEMO_FRIENDS, DEMO_PROFILE } from "@/lib/demoData";
+import {
+  getActiveSessionUserId,
+  loginLocalAccount,
+  setActiveSessionUserId,
+  subscribeStoreChanges,
+} from "@/lib/backendStore";
+import { DEMO_PROFILE } from "@/lib/demoData";
 import { getSupabase, isSupabaseConfigured } from "@/lib/supabase";
 import type {
   FeedFilter,
-  MediaType,
   Moment,
   Profile,
   PublicProfile,
@@ -37,8 +43,7 @@ import MemoriesView from "./MemoriesView";
 import ProfileSheet, { type InstallPromptEvent } from "./ProfileSheet";
 
 export default function DepongApp() {
-  const [loadingAuth, setLoadingAuth] = useState(isSupabaseConfigured);
-  const [demoMode, setDemoMode] = useState(false);
+  const [loadingAuth, setLoadingAuth] = useState(true);
 
   const [userId, setUserId] = useState<string | null>(null);
   const [email, setEmail] = useState<string>("");
@@ -75,7 +80,7 @@ export default function DepongApp() {
     return () => window.removeEventListener("beforeinstallprompt", handler);
   }, []);
 
-  // ---------- Load data Supabase ----------
+  // ---------- Load data profil, sahabat & momen ----------
   const reloadAll = useCallback(
     async (uid: string) => {
       try {
@@ -84,7 +89,15 @@ export default function DepongApp() {
           fetchFriends(uid),
           fetchMoments(),
         ]);
-        if (prof) setProfile(prof);
+        if (prof) {
+          setProfile(prof);
+          setEmail(prof.email ?? "");
+        } else {
+          // Jika akun dihapus oleh Admin, keluarkan sesi
+          setActiveSessionUserId(null);
+          setUserId(null);
+          setProfile(null);
+        }
         setFriends(fr);
         setMoments(mo);
       } catch (err) {
@@ -94,9 +107,52 @@ export default function DepongApp() {
     [notify],
   );
 
-  // ---------- Auth listener & auto-invite ----------
+  // ---------- Inisialisasi Sesi (Backend Terintegrasi & Supabase) ----------
   useEffect(() => {
-    if (!isSupabaseConfigured) return;
+    if (!isSupabaseConfigured) {
+      const savedId = getActiveSessionUserId();
+      if (!savedId) {
+        const t = window.setTimeout(() => setLoadingAuth(false), 0);
+        return () => window.clearTimeout(t);
+      }
+      let active = true;
+      fetchProfile(savedId)
+        .then(async (prof) => {
+          if (!active) return;
+          if (prof) {
+            setUserId(prof.id);
+            setProfile(prof);
+            setEmail(prof.email ?? "");
+            const [fr, mo] = await Promise.all([
+              fetchFriends(prof.id),
+              fetchMoments(),
+            ]);
+            if (active) {
+              setFriends(fr);
+              setMoments(mo);
+            }
+          } else {
+            setActiveSessionUserId(null);
+          }
+        })
+        .finally(() => active && setLoadingAuth(false));
+
+      const unsub = subscribeStoreChanges(() => {
+        const currentId = getActiveSessionUserId();
+        if (currentId) {
+          void reloadAll(currentId);
+        } else {
+          setUserId(null);
+          setProfile(null);
+        }
+      });
+
+      return () => {
+        active = false;
+        unsub();
+      };
+    }
+
     const supabase = getSupabase();
     supabase.auth.getSession().then(({ data }) => {
       const u = data.session?.user ?? null;
@@ -111,7 +167,6 @@ export default function DepongApp() {
       setUserId(u?.id ?? null);
       setEmail(u?.email ?? "");
       if (u) {
-        setDemoMode(false);
         void reloadAll(u.id);
       } else {
         setProfile(null);
@@ -125,24 +180,24 @@ export default function DepongApp() {
 
   // ---------- Auto tambah sahabat lewat ?invite=KODE ----------
   useEffect(() => {
-    if (!userId || demoMode) return;
+    if (!userId) return;
     const params = new URLSearchParams(window.location.search);
     const code = params.get("invite");
     if (!code) return;
     const cleanUrl = window.location.pathname;
     window.history.replaceState({}, "", cleanUrl);
 
-    addFriendByCode(code)
+    addFriendByCode(code, userId)
       .then((friend) => {
         notify(`${friend.display_name} ditambahkan sebagai sahabat 💛`);
         void reloadAll(userId);
       })
       .catch((err) => notify(errorMessage(err)));
-  }, [userId, demoMode, notify, reloadAll]);
+  }, [userId, notify, reloadAll]);
 
   // ---------- Supabase Realtime subscription ----------
   useEffect(() => {
-    if (!userId || demoMode || !isSupabaseConfigured) return;
+    if (!userId || !isSupabaseConfigured) return;
     const supabase = getSupabase();
     const channel = supabase
       .channel("depong-live")
@@ -157,73 +212,47 @@ export default function DepongApp() {
     return () => {
       void supabase.removeChannel(channel);
     };
-  }, [userId, demoMode, reloadAll]);
+  }, [userId, reloadAll]);
 
-  // ---------- Masuk Mode Demo ----------
-  function enterDemoMode() {
-    setDemoMode(true);
-    setUserId(DEMO_PROFILE.id);
-    setEmail("daffa@depong.demo");
-    setProfile(DEMO_PROFILE);
-    setFriends(DEMO_FRIENDS);
-    setMoments(createInitialDemoMoments(Date.now()));
+  // ---------- Masuk Cepat / Handler Login ----------
+  async function handleQuickLogin() {
+    try {
+      const prof = await loginLocalAccount({ emailOrUsername: DEMO_PROFILE.username });
+      setUserId(prof.id);
+      setProfile(prof);
+      setEmail(prof.email ?? "ahmmdaffa280904@gmail.com");
+      await reloadAll(prof.id);
+      setTab("camera");
+      notify(`Masuk sebagai ${prof.display_name} 💛`);
+    } catch (err) {
+      notify(errorMessage(err));
+    }
+  }
+
+  async function handleAuthenticated(prof: Profile) {
+    setUserId(prof.id);
+    setProfile(prof);
+    setEmail(prof.email ?? "");
+    await reloadAll(prof.id);
     setTab("camera");
-    notify("Mode Demo Aktif — kamera & video 7s siap dicoba!");
   }
 
-  function exitDemoMode() {
-    setDemoMode(false);
-    setUserId(null);
-    setProfile(null);
-    setFriends([]);
-    setMoments([]);
-  }
-
-  // ---------- Handlers Mode Demo vs Cloud ----------
-  function handleLocalMoment(input: {
-    url: string;
-    mediaType: MediaType;
-    duration: number | null;
-    caption: string;
-  }) {
-    if (!profile) return;
-    const newMoment: Moment = {
-      id: `local-${Date.now()}`,
-      user_id: profile.id,
-      media_path: input.url,
-      media_type: input.mediaType,
-      duration: input.duration,
-      caption: input.caption.trim() || null,
-      created_at: new Date().toISOString(),
-      profile,
-      reactions: [],
-    };
-    setMoments((prev) => [newMoment, ...prev]);
+  function handleLogout() {
+    setProfileOpen(false);
+    if (isSupabaseConfigured) {
+      void getSupabase().auth.signOut();
+    } else {
+      setActiveSessionUserId(null);
+      setUserId(null);
+      setProfile(null);
+      setFriends([]);
+      setMoments([]);
+      notify("Berhasil keluar akun");
+    }
   }
 
   async function handleReact(moment: Moment, emoji: string) {
     if (!profile) return;
-    if (demoMode) {
-      setMoments((prev) =>
-        prev.map((m) =>
-          m.id === moment.id
-            ? {
-                ...m,
-                reactions: [
-                  ...m.reactions,
-                  {
-                    id: `react-${Date.now()}-${Math.random()}`,
-                    user_id: profile.id,
-                    emoji,
-                    created_at: new Date().toISOString(),
-                  },
-                ],
-              }
-            : m,
-        ),
-      );
-      return;
-    }
     try {
       await addReaction(moment.id, profile.id, emoji);
       await reloadAll(profile.id);
@@ -234,13 +263,9 @@ export default function DepongApp() {
 
   async function handleReply(moment: Moment, body: string): Promise<boolean> {
     if (!profile) return false;
-    if (demoMode) {
-      notify(`Balasan terkirim ke ${moment.profile?.display_name ?? "Sahabat"} 💬`);
-      return true;
-    }
     try {
       await sendReply(moment.id, profile.id, body);
-      notify("Balasan terkirim 💬");
+      notify(`Balasan terkirim ke ${moment.profile?.display_name ?? "Sahabat"} 💬`);
       return true;
     } catch (err) {
       notify(errorMessage(err));
@@ -283,7 +308,11 @@ export default function DepongApp() {
   if (!profile) {
     return (
       <>
-        <AuthView onEnterDemo={enterDemoMode} notify={notify} />
+        <AuthView
+          onEnterDemo={() => void handleQuickLogin()}
+          onAuthenticated={(prof) => void handleAuthenticated(prof)}
+          notify={notify}
+        />
         {toast && (
           <div className="animate-toast-in fixed top-5 inset-x-0 z-50 mx-auto w-fit max-w-xs rounded-full bg-white px-4 py-2 text-center text-xs font-bold text-black shadow-xl">
             {toast}
@@ -295,8 +324,8 @@ export default function DepongApp() {
 
   return (
     <div className="relative mx-auto flex h-dvh w-full max-w-md flex-col overflow-hidden bg-ink text-white select-none">
-      {/* Top Bar */}
-      <header className="pt-safe relative z-30 flex items-center justify-between px-4 pt-3 pb-2">
+      {/* Top Bar (Dilengkapi ruang ekstra di atas agar ring avatar & tombol tidak pernah terpotong) */}
+      <header className="pt-safe relative z-30 flex shrink-0 items-center justify-between px-5 pb-2.5">
         {/* Kiri: Sahabat */}
         <button
           onClick={() => setFriendsOpen(true)}
@@ -306,72 +335,77 @@ export default function DepongApp() {
           <IconUsers size={18} />
         </button>
 
-        {/* Tengah: Pill Kontekstual (Friends count di Kamera / Filter di Feed) */}
-        {tab === "feed" ? (
-          <div className="relative">
-            <button
-              onClick={() => setFilterMenuOpen((v) => !v)}
-              className="flex items-center gap-1.5 rounded-full bg-panel-2 px-4 py-2 text-xs font-bold transition active:scale-95"
-            >
-              <span>{currentFilterLabel}</span>
-              <IconChevronDown size={14} />
-            </button>
-
-            {filterMenuOpen && (
-              <div
-                className="absolute top-full left-1/2 z-40 mt-2 w-48 -translate-x-1/2 rounded-2xl border border-white/10 bg-panel p-1.5 shadow-2xl"
-                onClick={() => setFilterMenuOpen(false)}
+        {/* Tengah: Pill Kontekstual + Shortcut Admin */}
+        <div className="flex items-center gap-2">
+          {tab === "feed" ? (
+            <div className="relative">
+              <button
+                onClick={() => setFilterMenuOpen((v) => !v)}
+                className="flex items-center gap-1.5 rounded-full bg-panel-2 px-4 py-2 text-xs font-bold transition active:scale-95"
               >
-                <button
-                  onClick={() => setFeedFilter("all")}
-                  className={`flex w-full items-center justify-between rounded-xl px-3 py-2 text-left text-xs font-semibold ${
-                    feedFilter === "all" ? "bg-gold text-black" : "hover:bg-panel-2"
-                  }`}
+                <span>{currentFilterLabel}</span>
+                <IconChevronDown size={14} />
+              </button>
+
+              {filterMenuOpen && (
+                <div
+                  className="absolute top-full left-1/2 z-40 mt-2 w-48 -translate-x-1/2 rounded-2xl border border-white/10 bg-panel p-1.5 shadow-2xl"
+                  onClick={() => setFilterMenuOpen(false)}
                 >
-                  <span>Everyone</span>
-                  <span>{moments.length}</span>
-                </button>
-                <button
-                  onClick={() => setFeedFilter("me")}
-                  className={`flex w-full items-center justify-between rounded-xl px-3 py-2 text-left text-xs font-semibold ${
-                    feedFilter === "me" ? "bg-gold text-black" : "hover:bg-panel-2"
-                  }`}
-                >
-                  <span>Momenku</span>
-                </button>
-                {friends.map((f) => (
                   <button
-                    key={f.id}
-                    onClick={() => setFeedFilter(f.id)}
+                    onClick={() => setFeedFilter("all")}
                     className={`flex w-full items-center justify-between rounded-xl px-3 py-2 text-left text-xs font-semibold ${
-                      feedFilter === f.id ? "bg-gold text-black" : "hover:bg-panel-2"
+                      feedFilter === "all" ? "bg-gold text-black" : "hover:bg-panel-2"
                     }`}
                   >
-                    <span className="truncate">{f.display_name}</span>
+                    <span>Everyone</span>
+                    <span>{moments.length}</span>
                   </button>
-                ))}
-              </div>
-            )}
-          </div>
-        ) : (
-          <button
-            onClick={() => setFriendsOpen(true)}
-            className="flex items-center gap-2 rounded-full bg-panel-2 px-4 py-2 text-xs font-bold transition active:scale-95"
-          >
-            <IconUsers size={15} className="text-gold" />
-            <span>{friends.length} Friends</span>
-            {demoMode && (
-              <span className="rounded-full bg-gold/20 px-1.5 py-0.5 text-[10px] font-extrabold text-gold">
-                DEMO
-              </span>
-            )}
-          </button>
-        )}
+                  <button
+                    onClick={() => setFeedFilter("me")}
+                    className={`flex w-full items-center justify-between rounded-xl px-3 py-2 text-left text-xs font-semibold ${
+                      feedFilter === "me" ? "bg-gold text-black" : "hover:bg-panel-2"
+                    }`}
+                  >
+                    <span>Momenku</span>
+                  </button>
+                  {friends.map((f) => (
+                    <button
+                      key={f.id}
+                      onClick={() => setFeedFilter(f.id)}
+                      className={`flex w-full items-center justify-between rounded-xl px-3 py-2 text-left text-xs font-semibold ${
+                        feedFilter === f.id ? "bg-gold text-black" : "hover:bg-panel-2"
+                      }`}
+                    >
+                      <span className="truncate">{f.display_name}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          ) : (
+            <button
+              onClick={() => setFriendsOpen(true)}
+              className="flex items-center gap-2 rounded-full bg-panel-2 px-4 py-2 text-xs font-bold transition active:scale-95"
+            >
+              <IconUsers size={15} className="text-gold" />
+              <span>{friends.length} Friends</span>
+            </button>
+          )}
 
-        {/* Kanan: Profil */}
+          <Link
+            href="/admin"
+            className="rounded-full border border-gold/35 bg-gold/15 px-2.5 py-1.5 text-[11px] font-extrabold text-gold transition hover:bg-gold hover:text-black"
+            title="Buka Dashboard Admin"
+          >
+            Admin
+          </Link>
+        </div>
+
+        {/* Kanan: Profil (diberi p-1 supaya ring-offset tidak terpotong) */}
         <button
           onClick={() => setProfileOpen(true)}
-          className="rounded-full transition active:scale-95"
+          className="rounded-full p-1 transition active:scale-95"
           aria-label="Profil"
         >
           <Avatar profile={profile} size={36} ring />
@@ -385,9 +419,8 @@ export default function DepongApp() {
             userId={profile.id}
             friendCount={friends.length}
             notify={notify}
-            onLocalMoment={demoMode ? handleLocalMoment : undefined}
             onSent={() => {
-              if (!demoMode) void reloadAll(profile.id);
+              void reloadAll(profile.id);
               setTab("feed");
             }}
             onOpenHistory={() => setTab("feed")}
@@ -424,7 +457,7 @@ export default function DepongApp() {
       {/* Floating Bottom Navigation Pill */}
       <nav
         aria-label="Navigasi utama"
-        className="pb-safe pointer-events-none fixed inset-x-0 bottom-4 z-30 flex justify-center"
+        className="pb-safe pointer-events-none fixed inset-x-0 bottom-3 z-30 flex justify-center"
       >
         <div className="pointer-events-auto flex items-center gap-3 rounded-full border border-white/15 bg-black/80 px-4 py-2 shadow-2xl backdrop-blur-xl">
           <button
@@ -466,88 +499,33 @@ export default function DepongApp() {
         </div>
       </nav>
 
-      {/* Bottom Sheets */}
-      {!demoMode ? (
-        <>
-          <FriendsSheet
-            open={friendsOpen}
-            onClose={() => setFriendsOpen(false)}
-            profile={profile}
-            friends={friends}
-            notify={notify}
-            onChanged={() => void reloadAll(profile.id)}
-          />
-          <ProfileSheet
-            open={profileOpen}
-            onClose={() => setProfileOpen(false)}
-            profile={profile}
-            email={email}
-            installPrompt={installPrompt}
-            onInstalled={() => setInstallPrompt(null)}
-            notify={notify}
-            onChanged={() => void reloadAll(profile.id)}
-          />
-          <ActivitySheet
-            moment={activityMoment}
-            people={peopleMap}
-            onClose={() => setActivityMoment(null)}
-            notify={notify}
-            onDeleted={() => void reloadAll(profile.id)}
-          />
-        </>
-      ) : (
-        <>
-          <FriendsSheet
-            open={friendsOpen}
-            onClose={() => setFriendsOpen(false)}
-            profile={profile}
-            friends={friends}
-            notify={notify}
-            onChanged={() => undefined}
-          />
-          {profileOpen && (
-            <div
-              className="fixed inset-0 z-50 flex items-end justify-center bg-black/70 backdrop-blur-sm"
-              onClick={() => setProfileOpen(false)}
-            >
-              <div
-                className="animate-sheet-up pb-safe w-full max-w-md rounded-t-[32px] border-t border-white/10 bg-panel p-6 space-y-4"
-                onClick={(e) => e.stopPropagation()}
-              >
-                <div className="flex items-center justify-between">
-                  <div>
-                    <h2 className="text-base font-bold">Mode Demo Lokal</h2>
-                    <p className="text-xs text-muted">
-                      Momen foto & video 7s disimpan sementara di browser ini.
-                    </p>
-                  </div>
-                  <button
-                    onClick={() => setProfileOpen(false)}
-                    className="rounded-full bg-panel-2 px-3 py-1 text-xs font-bold"
-                  >
-                    Tutup
-                  </button>
-                </div>
-                <a
-                  href="/admin"
-                  className="block w-full rounded-full border border-gold/30 bg-panel-2 py-3 text-center text-sm font-bold text-gold"
-                >
-                  🛡️ Buka Dashboard Admin
-                </a>
-                <button
-                  onClick={() => {
-                    setProfileOpen(false);
-                    exitDemoMode();
-                  }}
-                  className="w-full rounded-full bg-gold py-3 text-sm font-extrabold text-black"
-                >
-                  Ke Halaman Login Supabase
-                </button>
-              </div>
-            </div>
-          )}
-        </>
-      )}
+      {/* Bottom Sheets Terintegrasi */}
+      <FriendsSheet
+        open={friendsOpen}
+        onClose={() => setFriendsOpen(false)}
+        profile={profile}
+        friends={friends}
+        notify={notify}
+        onChanged={() => void reloadAll(profile.id)}
+      />
+      <ProfileSheet
+        open={profileOpen}
+        onClose={() => setProfileOpen(false)}
+        profile={profile}
+        email={email}
+        installPrompt={installPrompt}
+        onInstalled={() => setInstallPrompt(null)}
+        notify={notify}
+        onChanged={() => void reloadAll(profile.id)}
+        onLogout={handleLogout}
+      />
+      <ActivitySheet
+        moment={activityMoment}
+        people={peopleMap}
+        onClose={() => setActivityMoment(null)}
+        notify={notify}
+        onDeleted={() => void reloadAll(profile.id)}
+      />
 
       {/* Toast */}
       {toast && (

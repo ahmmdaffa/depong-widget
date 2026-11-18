@@ -2,7 +2,6 @@
 
 import { useState } from "react";
 import { errorMessage, updateDisplayName } from "@/lib/api";
-import { getSupabase } from "@/lib/supabase";
 import type { Profile } from "@/lib/types";
 import Avatar from "./Avatar";
 import { IconLogout } from "./Icons";
@@ -22,6 +21,7 @@ export default function ProfileSheet({
   onInstalled,
   notify,
   onChanged,
+  onLogout,
 }: {
   open: boolean;
   onClose: () => void;
@@ -31,6 +31,7 @@ export default function ProfileSheet({
   onInstalled: () => void;
   notify: (msg: string) => void;
   onChanged: () => void;
+  onLogout: () => void;
 }) {
   const [name, setName] = useState(profile.display_name);
   const [saving, setSaving] = useState(false);
@@ -128,10 +129,10 @@ export default function ProfileSheet({
       </a>
 
       <button
-        onClick={() => getSupabase().auth.signOut()}
+        onClick={onLogout}
         className="mt-2.5 flex w-full items-center justify-center gap-2 rounded-full bg-panel-2 py-3 text-sm font-semibold text-red-400"
       >
-        <IconLogout size={16} /> Keluar
+        <IconLogout size={16} /> Keluar / Ganti Akun
       </button>
     </Sheet>
   );

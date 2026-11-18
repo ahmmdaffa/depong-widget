@@ -1,5 +1,14 @@
-import { getSupabase, MEDIA_BUCKET } from "./supabase";
+import {
+  createLocalMomentRecord,
+  deleteLocalAccount,
+  loadLocalStore,
+  saveLocalStore,
+  syncWithServerStore,
+  toProfile,
+  toPublicProfile,
+} from "./backendStore";
 import { baseMime, extFromMime } from "./media";
+import { getSupabase, isSupabaseConfigured, MEDIA_BUCKET } from "./supabase";
 import type {
   AdminUserSummary,
   MediaType,
@@ -23,6 +32,11 @@ export function errorMessage(err: unknown): string {
 }
 
 export async function fetchProfile(userId: string): Promise<Profile | null> {
+  if (!isSupabaseConfigured) {
+    const store = await syncWithServerStore();
+    const acc = store.accounts.find((a) => a.id === userId);
+    return acc ? toProfile(acc) : null;
+  }
   const { data, error } = await getSupabase()
     .from("profiles")
     .select("*")
@@ -33,6 +47,18 @@ export async function fetchProfile(userId: string): Promise<Profile | null> {
 }
 
 export async function updateDisplayName(userId: string, displayName: string) {
+  if (!isSupabaseConfigured) {
+    const store = loadLocalStore();
+    const acc = store.accounts.find((a) => a.id === userId);
+    if (acc) {
+      acc.display_name = displayName;
+      acc.last_active_at = new Date().toISOString();
+      store.updatedAt = Date.now();
+      saveLocalStore(store, true);
+      await syncWithServerStore("update_profile");
+    }
+    return;
+  }
   const { error } = await getSupabase()
     .from("profiles")
     .update({ display_name: displayName })
@@ -41,6 +67,13 @@ export async function updateDisplayName(userId: string, displayName: string) {
 }
 
 export async function fetchFriends(userId: string): Promise<PublicProfile[]> {
+  if (!isSupabaseConfigured) {
+    const store = loadLocalStore();
+    const friendIds = new Set(
+      store.friendships.filter((f) => f.user_id === userId).map((f) => f.friend_id),
+    );
+    return store.accounts.filter((a) => friendIds.has(a.id)).map(toPublicProfile);
+  }
   const { data, error } = await getSupabase()
     .from("friendships")
     .select(`created_at, friend:profiles!friendships_friend_id_fkey(${PROFILE_FIELDS})`)
@@ -52,19 +85,72 @@ export async function fetchFriends(userId: string): Promise<PublicProfile[]> {
     .filter((f): f is PublicProfile => Boolean(f));
 }
 
-export async function addFriendByCode(code: string): Promise<PublicProfile> {
+export async function addFriendByCode(code: string, currentUserId?: string): Promise<PublicProfile> {
+  if (!isSupabaseConfigured) {
+    const store = await syncWithServerStore();
+    const clean = code.trim().toLowerCase();
+    const target = store.accounts.find(
+      (a) => a.invite_code.toLowerCase() === clean || a.username.toLowerCase() === clean,
+    );
+    if (!target) {
+      throw new Error("Kode undangan tidak ditemukan");
+    }
+    const uid = currentUserId ?? store.accounts[0]?.id;
+    if (!uid) throw new Error("Silakan masuk terlebih dahulu");
+    if (target.id === uid) {
+      throw new Error("Itu kode undangan kamu sendiri");
+    }
+    const exists = store.friendships.some(
+      (f) => f.user_id === uid && f.friend_id === target.id,
+    );
+    if (!exists) {
+      const nowIso = new Date().toISOString();
+      store.friendships.push({ user_id: uid, friend_id: target.id, created_at: nowIso });
+      store.friendships.push({ user_id: target.id, friend_id: uid, created_at: nowIso });
+      const me = store.accounts.find((a) => a.id === uid);
+      if (me) me.friends_count = (me.friends_count ?? 0) + 1;
+      target.friends_count = (target.friends_count ?? 0) + 1;
+      store.updatedAt = Date.now();
+      saveLocalStore(store, true);
+      await syncWithServerStore("add_friend");
+    }
+    return toPublicProfile(target);
+  }
   const { data, error } = await getSupabase().rpc("add_friend_by_code", { code });
   if (error) throw error;
   return data as PublicProfile;
 }
 
-export async function removeFriend(friendId: string) {
+export async function removeFriend(friendId: string, currentUserId?: string) {
+  if (!isSupabaseConfigured) {
+    const store = loadLocalStore();
+    const uid = currentUserId;
+    store.friendships = store.friendships.filter(
+      (f) =>
+        !(
+          (uid && f.user_id === uid && f.friend_id === friendId) ||
+          (uid && f.user_id === friendId && f.friend_id === uid)
+        ),
+    );
+    store.updatedAt = Date.now();
+    saveLocalStore(store, true);
+    await syncWithServerStore("remove_friend");
+    return;
+  }
   const { error } = await getSupabase().rpc("remove_friend", { target: friendId });
   if (error) throw error;
 }
 
-/** Ambil momen milik sendiri + sahabat (difilter otomatis oleh RLS). */
+/** Ambil momen milik sendiri + sahabat. */
 export async function fetchMoments(): Promise<Moment[]> {
+  if (!isSupabaseConfigured) {
+    const store = loadLocalStore();
+    const accMap = new Map(store.accounts.map((a) => [a.id, toPublicProfile(a)]));
+    return store.moments.map((m) => ({
+      ...m,
+      profile: m.profile ?? accMap.get(m.user_id) ?? null,
+    }));
+  }
   const { data, error } = await getSupabase()
     .from("moments")
     .select(
@@ -86,6 +172,10 @@ export async function uploadMoment(input: {
   duration: number | null;
   caption: string;
 }) {
+  if (!isSupabaseConfigured) {
+    await createLocalMomentRecord(input);
+    return;
+  }
   const supabase = getSupabase();
   const contentType = baseMime(input.mime || input.blob.type || "image/jpeg");
   const path = `${input.userId}/${crypto.randomUUID()}.${extFromMime(contentType)}`;
@@ -109,6 +199,14 @@ export async function uploadMoment(input: {
 }
 
 export async function deleteMoment(moment: Pick<Moment, "id" | "media_path">) {
+  if (!isSupabaseConfigured) {
+    const store = loadLocalStore();
+    store.moments = store.moments.filter((m) => m.id !== moment.id);
+    store.updatedAt = Date.now();
+    saveLocalStore(store, true);
+    await syncWithServerStore("delete_moment");
+    return;
+  }
   const supabase = getSupabase();
   const { error } = await supabase.from("moments").delete().eq("id", moment.id);
   if (error) throw error;
@@ -116,6 +214,23 @@ export async function deleteMoment(moment: Pick<Moment, "id" | "media_path">) {
 }
 
 export async function addReaction(momentId: string, userId: string, emoji: string) {
+  if (!isSupabaseConfigured) {
+    const store = loadLocalStore();
+    const target = store.moments.find((m) => m.id === momentId);
+    if (target) {
+      target.reactions.push({
+        id: `rct-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
+        moment_id: momentId,
+        user_id: userId,
+        emoji,
+        created_at: new Date().toISOString(),
+      });
+      store.updatedAt = Date.now();
+      saveLocalStore(store, true);
+      void syncWithServerStore("add_reaction");
+    }
+    return;
+  }
   const { error } = await getSupabase()
     .from("reactions")
     .insert({ moment_id: momentId, user_id: userId, emoji });
@@ -123,6 +238,22 @@ export async function addReaction(momentId: string, userId: string, emoji: strin
 }
 
 export async function sendReply(momentId: string, senderId: string, body: string) {
+  if (!isSupabaseConfigured) {
+    const store = loadLocalStore();
+    const sender = store.accounts.find((a) => a.id === senderId);
+    store.replies.push({
+      id: `rep-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
+      moment_id: momentId,
+      sender_id: senderId,
+      body: body.trim(),
+      created_at: new Date().toISOString(),
+      sender: sender ? toPublicProfile(sender) : null,
+    });
+    store.updatedAt = Date.now();
+    saveLocalStore(store, true);
+    void syncWithServerStore("send_reply");
+    return;
+  }
   const { error } = await getSupabase()
     .from("replies")
     .insert({ moment_id: momentId, sender_id: senderId, body: body.trim() });
@@ -130,6 +261,10 @@ export async function sendReply(momentId: string, senderId: string, body: string
 }
 
 export async function fetchReplies(momentId: string): Promise<Reply[]> {
+  if (!isSupabaseConfigured) {
+    const store = loadLocalStore();
+    return store.replies.filter((r) => r.moment_id === momentId);
+  }
   const { data, error } = await getSupabase()
     .from("replies")
     .select(`*, sender:profiles!replies_sender_id_fkey(${PROFILE_FIELDS})`)
@@ -141,9 +276,12 @@ export async function fetchReplies(momentId: string): Promise<Reply[]> {
 
 /** Ambil daftar seluruh user yang membuat akun untuk halaman Admin. */
 export async function fetchAdminUsers(): Promise<AdminUserSummary[]> {
-  const supabase = getSupabase();
+  if (!isSupabaseConfigured) {
+    const store = await syncWithServerStore();
+    return store.accounts;
+  }
 
-  // Coba panggil RPC admin_list_users terlebih dahulu (lengkap dengan statistik)
+  const supabase = getSupabase();
   const rpcRes = await supabase.rpc("admin_list_users");
   if (!rpcRes.error && Array.isArray(rpcRes.data)) {
     return rpcRes.data.map((row) => ({
@@ -161,7 +299,6 @@ export async function fetchAdminUsers(): Promise<AdminUserSummary[]> {
     }));
   }
 
-  // Fallback langsung ke tabel profiles jika fungsi RPC belum dijalankan
   const { data, error } = await supabase
     .from("profiles")
     .select("*")
@@ -185,11 +322,14 @@ export async function fetchAdminUsers(): Promise<AdminUserSummary[]> {
 
 /** Hapus akun pengguna dari Dashboard Admin. */
 export async function deleteAdminUser(userId: string): Promise<void> {
+  if (!isSupabaseConfigured) {
+    await deleteLocalAccount(userId);
+    return;
+  }
   const supabase = getSupabase();
   const rpcRes = await supabase.rpc("admin_delete_user", { target_user_id: userId });
   if (!rpcRes.error) return;
 
-  // Fallback jika fungsi RPC admin_delete_user belum dijalankan di SQL Editor
   const { error } = await supabase.from("profiles").delete().eq("id", userId);
   if (error) throw error;
 }

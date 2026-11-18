@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { deleteAdminUser, errorMessage, fetchAdminUsers } from "@/lib/api";
+import { registerLocalAccount, subscribeStoreChanges } from "@/lib/backendStore";
 import { createDemoAdminUsers } from "@/lib/demoData";
 import { clockTime, dayKey, timeAgo } from "@/lib/format";
 import { getSupabase, isSupabaseConfigured } from "@/lib/supabase";
@@ -28,19 +29,23 @@ export default function AdminDashboard() {
   const [pinInput, setPinInput] = useState("");
   const [pinError, setPinError] = useState(false);
 
-  const [source, setSource] = useState<"supabase" | "demo">(
-    isSupabaseConfigured ? "supabase" : "demo",
-  );
-  const [users, setUsers] = useState<AdminUserSummary[]>(() =>
-    isSupabaseConfigured ? [] : createDemoAdminUsers(),
-  );
-  const [loading, setLoading] = useState(isSupabaseConfigured);
+  const [users, setUsers] = useState<AdminUserSummary[]>(() => createDemoAdminUsers());
+  const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [period, setPeriod] = useState<FilterPeriod>("all");
   const [sortBy, setSortBy] = useState<SortBy>("newest");
   const [selectedUser, setSelectedUser] = useState<AdminUserSummary | null>(null);
   const [confirmDeleteUser, setConfirmDeleteUser] = useState<AdminUserSummary | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+
+  // Modal tambah akun baru langsung dari Admin
+  const [createModalOpen, setCreateModalOpen] = useState(false);
+  const [newName, setNewName] = useState("");
+  const [newUsername, setNewUsername] = useState("");
+  const [newEmail, setNewEmail] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [creatingUser, setCreatingUser] = useState(false);
+
   const [toast, setToast] = useState<string | null>(null);
   const [nowMs, setNowMs] = useState(1794980000000);
 
@@ -49,8 +54,7 @@ export default function AdminDashboard() {
     window.setTimeout(() => setToast(null), 2400);
   }, []);
 
-  const refreshSupabaseUsers = useCallback(async () => {
-    if (!isSupabaseConfigured) return;
+  const refreshUsers = useCallback(async () => {
     try {
       const list = await fetchAdminUsers();
       setUsers(list);
@@ -64,14 +68,6 @@ export default function AdminDashboard() {
 
   useEffect(() => {
     if (!unlocked) return;
-    if (source === "demo" || !isSupabaseConfigured) {
-      const current = Date.now();
-      const t = window.setTimeout(() => {
-        setNowMs(current);
-        setUsers(createDemoAdminUsers(current));
-      }, 0);
-      return () => window.clearTimeout(t);
-    }
     let active = true;
     fetchAdminUsers()
       .then((list) => {
@@ -81,25 +77,31 @@ export default function AdminDashboard() {
       })
       .catch((err) => active && notify(errorMessage(err)))
       .finally(() => active && setLoading(false));
+
+    const unsubLocal = subscribeStoreChanges(() => {
+      void refreshUsers();
+    });
+
     return () => {
       active = false;
+      unsubLocal();
     };
-  }, [unlocked, source, notify]);
+  }, [unlocked, notify, refreshUsers]);
 
   // Realtime update ketika ada user baru mendaftar di Supabase
   useEffect(() => {
-    if (!unlocked || source !== "supabase" || !isSupabaseConfigured) return;
+    if (!unlocked || !isSupabaseConfigured) return;
     const supabase = getSupabase();
     const channel = supabase
       .channel("depong-admin-profiles")
       .on("postgres_changes", { event: "*", schema: "public", table: "profiles" }, () => {
-        void refreshSupabaseUsers();
+        void refreshUsers();
       })
       .subscribe();
     return () => {
       void supabase.removeChannel(channel);
     };
-  }, [unlocked, source, refreshSupabaseUsers]);
+  }, [unlocked, refreshUsers]);
 
   // ---------- Statistik Ringkasan ----------
   const stats = useMemo(() => {
@@ -213,28 +215,29 @@ export default function AdminDashboard() {
     notify("Data akun di-export ke CSV 📊");
   }
 
-  function simulateNewAccount() {
-    const names = ["Bima Arya", "Citra Kirana", "Farhan Rizky", "Putri Maharani", "Zaki Pratama"];
-    const pick = names[Math.floor(Math.random() * names.length)];
-    const slug = pick.toLowerCase().replace(/\s+/g, "_") + "_" + Math.floor(10 + Math.random() * 89);
-    const code = Math.random().toString(36).slice(2, 10);
-    const nowIso = new Date().toISOString();
-
-    const newUser: AdminUserSummary = {
-      id: `sim-${Date.now()}`,
-      username: slug,
-      display_name: pick,
-      email: `${slug}@gmail.com`,
-      avatar_url: null,
-      invite_code: code,
-      created_at: nowIso,
-      moments_count: 1,
-      videos_count: 1,
-      friends_count: 2,
-      last_active_at: nowIso,
-    };
-    setUsers((prev) => [newUser, ...prev]);
-    notify(`Akun baru terdaftar: ${pick} (@${slug}) 💛`);
+  async function handleCreateUser(e: React.FormEvent) {
+    e.preventDefault();
+    if (creatingUser) return;
+    setCreatingUser(true);
+    try {
+      const prof = await registerLocalAccount({
+        displayName: newName,
+        username: newUsername,
+        email: newEmail,
+        password: newPassword,
+      });
+      await refreshUsers();
+      setCreateModalOpen(false);
+      setNewName("");
+      setNewUsername("");
+      setNewEmail("");
+      setNewPassword("");
+      notify(`Akun ${prof.display_name} (@${prof.username}) berhasil dibuat 💛`);
+    } catch (err) {
+      notify(errorMessage(err));
+    } finally {
+      setCreatingUser(false);
+    }
   }
 
   async function handleConfirmDelete() {
@@ -242,9 +245,7 @@ export default function AdminDashboard() {
     const target = confirmDeleteUser;
     setDeletingId(target.id);
     try {
-      if (source === "supabase" && isSupabaseConfigured) {
-        await deleteAdminUser(target.id);
-      }
+      await deleteAdminUser(target.id);
       setUsers((prev) => prev.filter((u) => u.id !== target.id));
       if (selectedUser?.id === target.id) setSelectedUser(null);
       setConfirmDeleteUser(null);
@@ -320,59 +321,31 @@ export default function AdminDashboard() {
             <div>
               <div className="flex items-center gap-2">
                 <h1 className="text-lg font-extrabold tracking-tight">Depong Admin</h1>
-                <span className="rounded-full bg-gold/20 px-2.5 py-0.5 text-[11px] font-extrabold text-gold">
-                  MONITOR AKUN
+                <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/15 px-2.5 py-0.5 text-[11px] font-extrabold text-emerald-400">
+                  <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
+                  AKTIF & TERINTEGRASI
                 </span>
               </div>
               <p className="text-xs text-muted">
-                Pantau semua pengguna yang membuat akun & aktivitas foto/video 7s
+                Pantau & kelola seluruh pengguna yang membuat akun beserta statistik foto/video 7s
               </p>
             </div>
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
-            {/* Switch Data Source */}
-            <div className="inline-flex rounded-full border border-white/10 bg-panel p-1 text-xs font-bold">
-              <button
-                onClick={() => {
-                  if (!isSupabaseConfigured) {
-                    notify("Isi .env.local terlebih dahulu untuk mode Live Supabase");
-                    return;
-                  }
-                  setLoading(true);
-                  setSource("supabase");
-                  void refreshSupabaseUsers();
-                }}
-                className={`rounded-full px-3 py-1 transition ${
-                  source === "supabase" ? "bg-gold text-black" : "text-muted"
-                }`}
-              >
-                Live Supabase
-              </button>
-              <button
-                onClick={() => {
-                  const current = Date.now();
-                  setSource("demo");
-                  setLoading(false);
-                  setNowMs(current);
-                  setUsers(createDemoAdminUsers(current));
-                }}
-                className={`rounded-full px-3 py-1 transition ${
-                  source === "demo" ? "bg-gold text-black" : "text-muted"
-                }`}
-              >
-                Data Demo
-              </button>
-            </div>
+            <button
+              onClick={() => setCreateModalOpen(true)}
+              className="rounded-full border border-gold/40 bg-panel-2 px-3.5 py-2 text-xs font-bold text-gold transition hover:bg-panel-3"
+            >
+              + Tambah Akun Baru
+            </button>
 
-            {source === "demo" && (
-              <button
-                onClick={simulateNewAccount}
-                className="rounded-full border border-gold/40 bg-panel-2 px-3.5 py-2 text-xs font-bold text-gold transition hover:bg-panel-3"
-              >
-                + Simulasi Akun Baru
-              </button>
-            )}
+            <button
+              onClick={() => void refreshUsers()}
+              className="rounded-full bg-panel-2 px-3.5 py-2 text-xs font-bold text-white transition hover:bg-panel-3"
+            >
+              Muat Ulang
+            </button>
 
             <button
               onClick={exportCsv}
@@ -394,24 +367,6 @@ export default function AdminDashboard() {
       </header>
 
       <main className="mx-auto max-w-6xl space-y-6 px-4 py-6 md:px-6">
-        {/* Banner Info bila Supabase belum diisi */}
-        {!isSupabaseConfigured && (
-          <div className="flex flex-col justify-between gap-2 rounded-3xl border border-gold/30 bg-panel p-4 sm:flex-row sm:items-center">
-            <div className="text-xs text-muted">
-              <b className="text-gold">Mode Pratinjau Demo:</b> Saat ini menampilkan contoh data
-              akun karena <code className="font-mono text-white">.env.local</code> Supabase belum
-              diisi. Setelah Supabase dihubungkan, halaman ini otomatis menampilkan pendaftar asli
-              secara *real-time*.
-            </div>
-            <button
-              onClick={simulateNewAccount}
-              className="shrink-0 rounded-full bg-gold px-3.5 py-1.5 text-xs font-extrabold text-black"
-            >
-              + Tes Tambah Pendaftar
-            </button>
-          </div>
-        )}
-
         {/* 4 Kartu Statistik Utama */}
         <section className="grid grid-cols-2 gap-3.5 lg:grid-cols-4">
           <div className="rounded-[28px] border border-white/10 bg-panel p-4">
@@ -502,18 +457,17 @@ export default function AdminDashboard() {
 
         {/* Filter, Search, & Tabel Daftar Akun */}
         <section className="rounded-[32px] border border-white/10 bg-panel p-5">
-          <div className="flex flex-col justify-between gap-3 pb-4 border-b border-white/10 lg:flex-row lg:items-center">
+          <div className="flex flex-col justify-between gap-3 border-b border-white/10 pb-4 lg:flex-row lg:items-center">
             <div>
               <h2 className="text-base font-bold">
                 Daftar Akun Pengguna ({filteredUsers.length})
               </h2>
               <p className="text-xs text-muted">
-                Klik pada salah satu pengguna untuk melihat rincian profil & kode undangan
+                Setiap akun baru yang didaftarkan di aplikasi langsung muncul di tabel ini
               </p>
             </div>
 
             <div className="flex flex-wrap items-center gap-2">
-              {/* Filter Periode */}
               <div className="inline-flex rounded-full bg-panel-2 p-1 text-xs font-bold">
                 {(
                   [
@@ -535,7 +489,6 @@ export default function AdminDashboard() {
                 ))}
               </div>
 
-              {/* Sort */}
               <select
                 value={sortBy}
                 onChange={(e) => setSortBy(e.target.value as SortBy)}
@@ -549,7 +502,6 @@ export default function AdminDashboard() {
             </div>
           </div>
 
-          {/* Search Input */}
           <div className="mt-4">
             <input
               type="search"
@@ -560,7 +512,6 @@ export default function AdminDashboard() {
             />
           </div>
 
-          {/* Daftar Akun */}
           {loading ? (
             <div className="py-12 text-center text-sm text-muted">Memuat data akun…</div>
           ) : filteredUsers.length === 0 ? (
@@ -671,6 +622,88 @@ export default function AdminDashboard() {
           )}
         </section>
       </main>
+
+      {/* Modal Tambah Akun Baru dari Admin */}
+      {createModalOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4 backdrop-blur-sm"
+          onClick={() => !creatingUser && setCreateModalOpen(false)}
+        >
+          <form
+            onSubmit={handleCreateUser}
+            className="animate-sheet-up w-full max-w-sm rounded-[32px] border border-white/15 bg-panel p-6 space-y-3.5"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between">
+              <h3 className="text-base font-extrabold">Buat Akun Pengguna Baru</h3>
+              <button
+                type="button"
+                onClick={() => setCreateModalOpen(false)}
+                className="flex h-8 w-8 items-center justify-center rounded-full bg-panel-2 text-white/80"
+              >
+                <IconX size={16} />
+              </button>
+            </div>
+
+            <div>
+              <label className="mb-1 block text-xs font-semibold text-muted">Nama Tampilan</label>
+              <input
+                type="text"
+                required
+                value={newName}
+                onChange={(e) => setNewName(e.target.value)}
+                placeholder="Contoh: Bima Arya"
+                className="w-full rounded-2xl border border-white/10 bg-panel-2 px-4 py-2.5 text-sm text-white outline-none focus:border-gold"
+              />
+            </div>
+
+            <div>
+              <label className="mb-1 block text-xs font-semibold text-muted">Username</label>
+              <input
+                type="text"
+                required
+                value={newUsername}
+                onChange={(e) => setNewUsername(e.target.value)}
+                placeholder="bima_arya"
+                className="w-full rounded-2xl border border-white/10 bg-panel-2 px-4 py-2.5 font-mono text-sm text-white outline-none focus:border-gold"
+              />
+            </div>
+
+            <div>
+              <label className="mb-1 block text-xs font-semibold text-muted">Email</label>
+              <input
+                type="email"
+                required
+                value={newEmail}
+                onChange={(e) => setNewEmail(e.target.value)}
+                placeholder="bima@email.com"
+                className="w-full rounded-2xl border border-white/10 bg-panel-2 px-4 py-2.5 text-sm text-white outline-none focus:border-gold"
+              />
+            </div>
+
+            <div>
+              <label className="mb-1 block text-xs font-semibold text-muted">Password</label>
+              <input
+                type="password"
+                required
+                minLength={6}
+                value={newPassword}
+                onChange={(e) => setNewPassword(e.target.value)}
+                placeholder="Minimal 6 karakter"
+                className="w-full rounded-2xl border border-white/10 bg-panel-2 px-4 py-2.5 text-sm text-white outline-none focus:border-gold"
+              />
+            </div>
+
+            <button
+              type="submit"
+              disabled={creatingUser}
+              className="mt-2 w-full rounded-full bg-gold py-3 text-xs font-extrabold text-black disabled:opacity-50"
+            >
+              {creatingUser ? "Menyimpan…" : "Simpan & Buat Akun"}
+            </button>
+          </form>
+        </div>
+      )}
 
       {/* Modal Detail Akun */}
       {selectedUser && (

@@ -39,6 +39,7 @@ yarn-error.log*
 
 # raw design archive
 /file-design
+.depong-store.json
 
 # typescript
 *.tsbuildinfo

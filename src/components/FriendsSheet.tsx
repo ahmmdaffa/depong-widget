@@ -60,7 +60,7 @@ export default function FriendsSheet({
     if (!value || busy) return;
     setBusy(true);
     try {
-      const friend = await addFriendByCode(value);
+      const friend = await addFriendByCode(value, profile.id);
       notify(`${friend.display_name} sekarang sahabatmu 💛`);
       setCode("");
       onChanged();
@@ -74,7 +74,7 @@ export default function FriendsSheet({
   async function remove(friend: PublicProfile) {
     if (!window.confirm(`Hapus ${friend.display_name} dari sahabat?`)) return;
     try {
-      await removeFriend(friend.id);
+      await removeFriend(friend.id, profile.id);
       notify(`${friend.display_name} dihapus`);
       onChanged();
     } catch (err) {
