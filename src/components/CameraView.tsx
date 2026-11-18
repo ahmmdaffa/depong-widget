@@ -34,6 +34,21 @@ interface BackShot {
   url: string;
 }
 
+interface ZoomRange {
+  min?: number;
+  max?: number;
+}
+
+interface ExtendedCapabilities extends MediaTrackCapabilities {
+  zoom?: ZoomRange;
+}
+
+interface ExtendedConstraintSet extends MediaTrackConstraintSet {
+  zoom?: number;
+}
+
+type LensMode = "1x" | "0.5x";
+
 const RING_RADIUS = 38;
 
 export default function CameraView({
@@ -58,9 +73,19 @@ export default function CameraView({
   const swipeStartXRef = useRef<number | null>(null);
   const swipeCurrentXRef = useRef<number | null>(null);
 
+  // Referensi deteksi lensa wide (0,5x)
+  const mainDeviceIdRef = useRef<string | null>(null);
+  const wideDeviceIdRef = useRef<string | null>(null);
+  const zoomCapsRef = useRef<{ min: number; max: number } | null>(null);
+  const lensRef = useRef<LensMode>("1x");
+
   // Sesi foto 2 bagian dimulai dari kamera belakang ("environment"), lalu otomatis ke depan ("user")
   const [facing, setFacing] = useState<"user" | "environment">("environment");
   const [backShot, setBackShot] = useState<BackShot | null>(null);
+  const [lens, setLens] = useState<LensMode>("1x");
+  const [deviceIdOverride, setDeviceIdOverride] = useState<string | null>(null);
+  const [wideAvailable, setWideAvailable] = useState(false);
+  const [switchingLens, setSwitchingLens] = useState(false);
 
   const [cameraReady, setCameraReady] = useState(false);
   const [cameraError, setCameraError] = useState<string | null>(null);
@@ -90,6 +115,93 @@ export default function CameraView({
     setBackShot(null);
   }, []);
 
+  // ---------- Deteksi Kemampuan Lensa Wide 0,5x (Zoom Capability atau Multi-Lens Device) ----------
+  const inspectWideLensSupport = useCallback(
+    async (stream: MediaStream, currentFacing: "user" | "environment") => {
+      if (currentFacing !== "environment") {
+        zoomCapsRef.current = null;
+        setWideAvailable(false);
+        return;
+      }
+
+      const track = stream.getVideoTracks()[0];
+      if (!track) return;
+
+      const settings = typeof track.getSettings === "function" ? track.getSettings() : null;
+      if (settings?.deviceId && !mainDeviceIdRef.current) {
+        mainDeviceIdRef.current = settings.deviceId;
+      }
+
+      const caps =
+        typeof track.getCapabilities === "function"
+          ? (track.getCapabilities() as ExtendedCapabilities)
+          : null;
+
+      if (caps?.zoom && typeof caps.zoom.min === "number" && caps.zoom.min <= 0.65) {
+        zoomCapsRef.current = { min: caps.zoom.min, max: caps.zoom.max ?? 1 };
+        setWideAvailable(true);
+        // Jika baru pindah ke lensa 0,5x lewat multi-cam virtual (mis. Triple Camera), langsung atur zoom
+        if (lensRef.current === "0.5x") {
+          const target = Math.max(0.5, caps.zoom.min);
+          try {
+            await track.applyConstraints({
+              advanced: [{ zoom: target } as ExtendedConstraintSet],
+            });
+          } catch {
+            await track
+              .applyConstraints({ zoom: target } as ExtendedConstraintSet)
+              .catch(() => undefined);
+          }
+        }
+        return;
+      }
+
+      zoomCapsRef.current = null;
+
+      // Periksa daftar kamera fisik (untuk iOS/Android yang memisahkan lensa ultra-wide)
+      try {
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const videoInputs = devices.filter((d) => d.kind === "videoinput");
+
+        // Prioritas 1: label eksplisit ultra-wide / 0.5x
+        let wideCam = videoInputs.find((d) =>
+          /ultra\s*-?\s*wide|0\.5|0,5|fisheye/i.test(d.label),
+        );
+
+        // Prioritas 2: kamera virtual multi-lensa (Triple / Dual Wide)
+        if (!wideCam) {
+          wideCam = videoInputs.find((d) => /triple|dual\s*wide/i.test(d.label));
+        }
+
+        // Prioritas 3: kamera belakang kedua pada Android (bukan kamera depan/tele/depth/macro)
+        if (!wideCam) {
+          const rearCams = videoInputs.filter(
+            (d) =>
+              !/front|depan|user|facetime|selfie|tele|depth|tof|infrared|\bir\b|lidar|macro/i.test(
+                d.label,
+              ) &&
+              (/back|rear|environment|belakang|camera2/i.test(d.label) ||
+                videoInputs.length > 2),
+          );
+          if (rearCams.length >= 2) {
+            const activeId = settings?.deviceId;
+            wideCam = rearCams.find((d) => d.deviceId && d.deviceId !== activeId) ?? rearCams[1];
+          }
+        }
+
+        if (wideCam?.deviceId && wideCam.deviceId !== mainDeviceIdRef.current) {
+          wideDeviceIdRef.current = wideCam.deviceId;
+          setWideAvailable(true);
+        } else {
+          setWideAvailable(Boolean(wideDeviceIdRef.current));
+        }
+      } catch {
+        setWideAvailable(Boolean(wideDeviceIdRef.current));
+      }
+    },
+    [],
+  );
+
   // ---------- Kamera Resolusi Tinggi ----------
   useEffect(() => {
     let cancelled = false;
@@ -105,11 +217,15 @@ export default function CameraView({
         streamRef.current?.getTracks().forEach((t) => t.stop());
         streamRef.current = null;
 
+        const videoBase: MediaTrackConstraints = deviceIdOverride
+          ? { deviceId: { exact: deviceIdOverride } }
+          : { facingMode: { ideal: facing } };
+
         let stream: MediaStream;
         try {
           stream = await navigator.mediaDevices.getUserMedia({
             video: {
-              facingMode: { ideal: facing },
+              ...videoBase,
               width: { ideal: 1920, min: 1280 },
               height: { ideal: 1080, min: 720 },
             },
@@ -117,7 +233,7 @@ export default function CameraView({
           });
         } catch {
           stream = await navigator.mediaDevices.getUserMedia({
-            video: { facingMode: { ideal: facing } },
+            video: videoBase,
             audio: false,
           });
         }
@@ -134,8 +250,23 @@ export default function CameraView({
         }
         setCameraError(null);
         setCameraReady(true);
+        setSwitchingLens(false);
+        void inspectWideLensSupport(stream, facing);
       } catch (err) {
         if (cancelled) return;
+        setSwitchingLens(false);
+
+        // Jika deviceId lensa 0,5x gagal dibuka oleh browser, otomatis kembalikan ke 1x utama
+        if (deviceIdOverride) {
+          wideDeviceIdRef.current = null;
+          lensRef.current = "1x";
+          setLens("1x");
+          setDeviceIdOverride(null);
+          setWideAvailable(false);
+          notify("Lensa 0,5x tidak dapat diakses pada perangkat ini");
+          return;
+        }
+
         setCameraReady(false);
         const name = err instanceof DOMException ? err.name : "";
         setCameraError(
@@ -154,7 +285,7 @@ export default function CameraView({
       streamRef.current?.getTracks().forEach((t) => t.stop());
       streamRef.current = null;
     };
-  }, [facing, retryKey]);
+  }, [facing, deviceIdOverride, retryKey, inspectWideLensSupport, notify]);
 
   useEffect(() => {
     return () => {
@@ -163,6 +294,53 @@ export default function CameraView({
       if (backShotUrlRef.current) URL.revokeObjectURL(backShotUrlRef.current);
     };
   }, []);
+
+  // ---------- Ubah Lensa 0,5x / 1x ----------
+  async function handleSelectLens(target: LensMode) {
+    if (target === lens || switchingLens || !cameraReady || facing !== "environment" || backShot) {
+      return;
+    }
+
+    // Mode A: Ganti lensa langsung lewat hardware zoom capability (tanpa kedip restart kamera)
+    const track = streamRef.current?.getVideoTracks()[0];
+    if (zoomCapsRef.current && track) {
+      setSwitchingLens(true);
+      try {
+        const z = target === "0.5x" ? Math.max(0.5, zoomCapsRef.current.min) : 1;
+        try {
+          await track.applyConstraints({
+            advanced: [{ zoom: z } as ExtendedConstraintSet],
+          });
+        } catch {
+          await track.applyConstraints({ zoom: z } as ExtendedConstraintSet);
+        }
+        lensRef.current = target;
+        setLens(target);
+      } catch {
+        notify("Gagal mengganti lensa wide pada browser ini");
+      } finally {
+        setSwitchingLens(false);
+      }
+      return;
+    }
+
+    // Mode B: Ganti lensa lewat pemilihan deviceId kamera fisik ultra-wide
+    if (target === "0.5x") {
+      if (!wideDeviceIdRef.current) {
+        notify("Lensa wide 0,5x tidak terdeteksi di browser perangkat ini");
+        return;
+      }
+      setSwitchingLens(true);
+      lensRef.current = "0.5x";
+      setLens("0.5x");
+      setDeviceIdOverride(wideDeviceIdRef.current);
+    } else {
+      setSwitchingLens(true);
+      lensRef.current = "1x";
+      setLens("1x");
+      setDeviceIdOverride(mainDeviceIdRef.current);
+    }
+  }
 
   const showCaptured = useCallback((next: CapturedPhoto) => {
     if (capturedUrlRef.current) URL.revokeObjectURL(capturedUrlRef.current);
@@ -176,8 +354,18 @@ export default function CameraView({
     setCaptured(null);
     setCaption("");
     clearBackShot();
+    lensRef.current = "1x";
+    setLens("1x");
+    setDeviceIdOverride(null);
     setFacing("environment");
   }, [clearBackShot]);
+
+  function handleFlipFacing() {
+    lensRef.current = "1x";
+    setLens("1x");
+    setDeviceIdOverride(null);
+    setFacing((f) => (f === "user" ? "environment" : "user"));
+  }
 
   async function flashThen<T>(fn: () => Promise<T>): Promise<T> {
     if (flashOn) {
@@ -227,6 +415,9 @@ export default function CameraView({
         const url = URL.createObjectURL(firstBlob);
         backShotUrlRef.current = url;
         setBackShot({ blob: firstBlob, url });
+        lensRef.current = "1x";
+        setLens("1x");
+        setDeviceIdOverride(null);
         setFacing("user");
         notify("Foto belakang tersimpan! Sekarang ambil foto kamera depan 📸");
         return;
@@ -334,9 +525,12 @@ export default function CameraView({
     transform: "translateZ(0)",
   };
 
+  const showLensControls =
+    !captured && !backShot && cameraReady && facing === "environment";
+
   return (
     <div className="flex h-full flex-col items-center justify-between gap-2.5 px-3 pt-1 pb-24">
-      {/* Bingkai Kamera 4:5 Portrait Mobile (Sama persis dengan rasio hasil foto 1152x1440 agar tidak ada sisi yang terpotong) */}
+      {/* Bingkai Kamera 4:5 Portrait Mobile */}
       <div
         onTouchStart={(e) => onSwipeStart(e.touches[0].clientX)}
         onTouchMove={(e) => onSwipeMove(e.touches[0].clientX)}
@@ -472,6 +666,9 @@ export default function CameraView({
                 type="button"
                 onClick={() => {
                   clearBackShot();
+                  lensRef.current = "1x";
+                  setLens("1x");
+                  setDeviceIdOverride(null);
                   setFacing("environment");
                 }}
                 className="rounded-full bg-black/60 px-3 py-1.5 text-xs font-bold text-white backdrop-blur-md"
@@ -492,59 +689,102 @@ export default function CameraView({
           </div>
         )}
 
-        {/* Satu Kapsul Filter Tunggal yang Rapi */}
+        {/* Kontrol Bawah Dalam Bingkai: Lensa (0,5x | 1x) + Kapsul Filter Rapi */}
         {(cameraReady || captured) && (
           <div
-            className={`absolute inset-x-0 z-10 flex flex-col items-center gap-1.5 ${
-              captured ? "bottom-16" : "bottom-4"
+            className={`absolute inset-x-0 z-10 flex flex-col items-center gap-2 ${
+              captured ? "bottom-16" : "bottom-3.5"
             }`}
           >
-            <div
-              className={`inline-flex items-center gap-2 rounded-full border border-white/15 bg-black/60 px-3 py-1.5 shadow-lg backdrop-blur-md transition-transform duration-200 ${
-                filterPulse ? "scale-105 border-gold/50" : "scale-100"
-              }`}
-            >
-              <button
-                type="button"
-                onClick={() => selectFilterIndex(filterIdx - 1)}
-                disabled={filterIdx === 0}
-                className="flex h-5 w-5 items-center justify-center rounded-full text-white/80 transition hover:text-white disabled:opacity-25"
-                aria-label="Filter sebelumnya"
+            {/* Tombol Kecil Ubah Lensa (0,5x Wide / 1x Normal) */}
+            {showLensControls && (
+              <div
+                onTouchStart={(e) => e.stopPropagation()}
+                onMouseDown={(e) => e.stopPropagation()}
+                className="inline-flex items-center gap-0.5 rounded-full border border-white/15 bg-black/55 p-0.5 shadow-md backdrop-blur-md"
+                role="group"
+                aria-label="Pilihan lensa kamera"
               >
-                <IconChevronLeft size={14} />
-              </button>
+                <button
+                  type="button"
+                  disabled={switchingLens}
+                  onClick={() => void handleSelectLens("0.5x")}
+                  className={`rounded-full px-2.5 py-0.5 text-[11px] font-extrabold tracking-tight transition ${
+                    lens === "0.5x"
+                      ? "bg-gold text-black shadow"
+                      : wideAvailable
+                        ? "text-white/90 hover:text-white"
+                        : "text-white/50 hover:text-white/80"
+                  }`}
+                  title="Lensa Ultra Wide 0,5x"
+                >
+                  0,5x
+                </button>
+                <button
+                  type="button"
+                  disabled={switchingLens}
+                  onClick={() => void handleSelectLens("1x")}
+                  className={`rounded-full px-2.5 py-0.5 text-[11px] font-extrabold tracking-tight transition ${
+                    lens === "1x"
+                      ? "bg-gold text-black shadow"
+                      : "text-white/90 hover:text-white"
+                  }`}
+                  title="Lensa Normal 1x"
+                >
+                  1x
+                </button>
+              </div>
+            )}
 
-              <span
-                className={`min-w-[124px] text-center text-xs font-extrabold tracking-wide transition-colors ${
-                  filterIdx === 0 ? "text-white/90" : "text-gold"
+            {/* Satu Kapsul Filter Tunggal yang Rapi */}
+            <div className="flex flex-col items-center gap-1.5">
+              <div
+                className={`inline-flex items-center gap-2 rounded-full border border-white/15 bg-black/60 px-3 py-1.5 shadow-lg backdrop-blur-md transition-transform duration-200 ${
+                  filterPulse ? "scale-105 border-gold/50" : "scale-100"
                 }`}
               >
-                {activeFilter.badge}
-              </span>
-
-              <button
-                type="button"
-                onClick={() => selectFilterIndex(filterIdx + 1)}
-                disabled={filterIdx === CAMERA_FILTERS.length - 1}
-                className="flex h-5 w-5 items-center justify-center rounded-full text-white/80 transition hover:text-white disabled:opacity-25"
-                aria-label="Filter berikutnya"
-              >
-                <IconChevronRight size={14} />
-              </button>
-            </div>
-
-            <div className="flex items-center gap-1">
-              {CAMERA_FILTERS.map((f, idx) => (
                 <button
-                  key={f.id}
                   type="button"
-                  onClick={() => selectFilterIndex(idx)}
-                  aria-label={f.name}
-                  className={`h-1.5 rounded-full transition-all duration-200 ${
-                    idx === filterIdx ? "w-4 bg-gold" : "w-1.5 bg-white/35"
+                  onClick={() => selectFilterIndex(filterIdx - 1)}
+                  disabled={filterIdx === 0}
+                  className="flex h-5 w-5 items-center justify-center rounded-full text-white/80 transition hover:text-white disabled:opacity-25"
+                  aria-label="Filter sebelumnya"
+                >
+                  <IconChevronLeft size={14} />
+                </button>
+
+                <span
+                  className={`min-w-[124px] text-center text-xs font-extrabold tracking-wide transition-colors ${
+                    filterIdx === 0 ? "text-white/90" : "text-gold"
                   }`}
-                />
-              ))}
+                >
+                  {activeFilter.badge}
+                </span>
+
+                <button
+                  type="button"
+                  onClick={() => selectFilterIndex(filterIdx + 1)}
+                  disabled={filterIdx === CAMERA_FILTERS.length - 1}
+                  className="flex h-5 w-5 items-center justify-center rounded-full text-white/80 transition hover:text-white disabled:opacity-25"
+                  aria-label="Filter berikutnya"
+                >
+                  <IconChevronRight size={14} />
+                </button>
+              </div>
+
+              <div className="flex items-center gap-1">
+                {CAMERA_FILTERS.map((f, idx) => (
+                  <button
+                    key={f.id}
+                    type="button"
+                    onClick={() => selectFilterIndex(idx)}
+                    aria-label={f.name}
+                    className={`h-1.5 rounded-full transition-all duration-200 ${
+                      idx === filterIdx ? "w-4 bg-gold" : "w-1.5 bg-white/35"
+                    }`}
+                  />
+                ))}
+              </div>
             </div>
           </div>
         )}
@@ -563,7 +803,7 @@ export default function CameraView({
         )}
       </div>
 
-      {/* Kontrol Bawah (Tanpa Tab Pemilih Foto/Video) */}
+      {/* Kontrol Bawah */}
       {captured ? (
         <div className="flex w-full shrink-0 flex-col items-center gap-2">
           <div className="flex w-full items-center justify-around px-6">
@@ -631,7 +871,7 @@ export default function CameraView({
             </button>
 
             <button
-              onClick={() => setFacing((f) => (f === "user" ? "environment" : "user"))}
+              onClick={handleFlipFacing}
               className="flex h-12 w-12 items-center justify-center rounded-full bg-panel-2 text-white/90 transition active:rotate-180"
               aria-label="Ganti kamera"
             >
