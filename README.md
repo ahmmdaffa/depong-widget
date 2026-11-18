@@ -1,60 +1,128 @@
-# Depong — Web App Ala Locket (Foto & Video 7 Detik)
+<div align="center">
 
-Aplikasi web mobile-first bergaya **Locket Dark Aesthetic** dengan dukungan **Foto** & **Video 7 Detik**, **Feed Realtime + Reaksi Emoji Melayang**, serta **Memories & Kalender Bulanan**.
+# 🟡 Depong Widget — Locket-Style Web App (Foto & Video 7 Detik)
 
----
+**Berbagi foto & klip video 7 detik secara *real-time* langsung ke layar sahabat terdekatmu.**  
+Dibangun dengan **Next.js (App Router)**, **TypeScript**, **Tailwind CSS v4**, **WebRTC (`MediaRecorder`)**, dan **Supabase**.
 
-## Fitur Utama
-- **Kamera Foto & Video 7 Detik:** Buka kamera langsung di browser (`getUserMedia` + `MediaRecorder`), rekam video otomatis berhenti di **7 detik** dengan indikator *gold progress ring*, atau pilih dari galeri.
-- **Mode Demo Instan:** Bisa langsung dicoba di browser tanpa login terlebih dahulu.
-- **Feed Momen & Reaksi Cepat:** Auto-play video 7 detik (loop), balas pesan singkat, dan animasi emoji melayang (`💛 🔥 😍`).
-- **Memories & Kalender Visual:** Grid kolase momen dan kalender bulanan otomatis terisi foto/video di setiap tanggal.
-- **Sistem Sahabat (Close Friends):** Tambah sahabat lewat kode/link undangan (maksimal 20 sahabat).
-- **PWA Ready:** Dilengkapi `manifest.webmanifest` & ikon agar bisa di-*Add to Home Screen* di Android maupun iOS.
+![Depong App Showcase](./public/screenshots/hero-preview.png)
+
+</div>
 
 ---
 
-## 1. Cara Menjalankan di Laptop (Lokal)
+## ✨ Mengenal Project Ini
 
-```bash
-npm install
-npm run dev
+**Depong** adalah aplikasi web *mobile-first* (mendukung **PWA / Add to Home Screen**) yang terinspirasi dari **Locket Widget** dengan tambahan kemampuan merekam dan mengirim **video singkat berdurasi maksimal 7 detik**.
+
+Dirancang dengan estetika **Locket Dark Mode + Gold Accent** (`#050505` & `#F5C451`), aplikasi ini menyediakan **Mode Demo Instan** (bisa langsung dicoba di browser tanpa perlu login terlebih dahulu) sekaligus siap terhubung penuh ke **Supabase** (Auth, PostgreSQL Database, Storage, dan Realtime).
+
+---
+
+## 📱 Tampilan Layar Aplikasi (Screenshots)
+
+| 1. Kamera Foto & Video 7s | 2. Feed Momen & Reaksi | 3. Memories & Kalender Visual |
+| :---: | :---: | :---: |
+| ![Layar Kamera](./public/screenshots/screen-camera.png) | ![Layar Feed](./public/screenshots/screen-feed.png) | ![Layar Memories](./public/screenshots/screen-memories.png) |
+| Viewfinder *squircle* dengan *switch* **`FOTO` \| `VIDEO 7s`**, *gold progress ring* otomatis 7 detik, *flash*, *flip camera*, & unggah dari galeri. | *Vertical snap feed* dengan *auto-loop* video 7 detik, tombol *mute/unmute*, kolom balas pesan, dan animasi reaksi melayang. | Kolase foto/video terbaru, kalender visual bulanan di setiap tanggal aktif, serta penghitung *daily streak*. |
+
+---
+
+## 🚀 Fitur Utama
+
+- **🎥 Kamera Web & Rekam Video 7 Detik:**
+  - Membuka kamera depan/belakang langsung dari browser (`navigator.mediaDevices.getUserMedia`).
+  - Perekaman video menggunakan `MediaRecorder` API dengan *circular gold progress bar* yang otomatis berhenti tepat di **7 detik** dan memilih *codec* terbaik (`video/mp4` / `video/webm`) agar ringan (~1–2 MB).
+- **⚡ Feed Realtime & Reaksi Cepat:**
+  - Sinkronisasi momen dan reaksi secara langsung menggunakan **Supabase Realtime**.
+  - Kirim reaksi cepat (`💛`, `🔥`, `😍`) dengan efek *floating emoji* atau balas pesan langsung ke pemilik momen.
+- **🗓️ Memories & Kalender Bulanan:**
+  - Arsip kolase momen milik sendiri maupun seluruh sahabat, dilengkapi kalender bulanan bergambar dan statistik *streak* harian.
+- **👥 Sistem Sahabat Dekat (*Close Friends*):**
+  - Setiap pengguna memiliki **kode undangan 8 karakter** unik dan **link undangan otomatis** (`?invite=KODE`).
+  - Pertemanan otomatis berlaku **2 arah (mutual)** dengan batas maksimal 20 sahabat terdekat.
+- **📲 Progressive Web App (PWA) & Mode Demo:**
+  - Dilengkapi `manifest.webmanifest` dan panduan instalasi ke layar utama (*Add to Home Screen*) untuk iOS Safari & Android Chrome.
+  - Tersedia **Mode Demo** untuk mencoba kamera, video 7 detik, feed, dan kalender langsung di browser tanpa setup database terlebih dahulu.
+
+---
+
+## 🗂️ Struktur Direktori File
+
+```text
+├── public/
+│   ├── icons/                  # Ikon PWA (192x192, 512x512, maskable)
+│   └── screenshots/            # Gambar pratinjau tampilan aplikasi
+├── src/
+│   ├── app/
+│   │   ├── globals.css         # Tema warna Locket Dark & animasi custom Tailwind v4
+│   │   ├── layout.tsx          # Root layout & konfigurasi viewport mobile/PWA
+│   │   ├── manifest.ts         # Web App Manifest untuk instalasi ke Home Screen
+│   │   └── page.tsx            # Halaman utama aplikasi
+│   ├── components/
+│   │   ├── DepongApp.tsx       # Orkestrator state utama, navigasi, Realtime & Mode Demo
+│   │   ├── CameraView.tsx      # Viewfinder kamera, capture foto & rekam video 7 detik
+│   │   ├── FeedView.tsx        # Vertical snap feed, auto-play video & floating emoji
+│   │   ├── MemoriesView.tsx    # Kolase galeri & kalender visual bulanan
+│   │   ├── FriendsSheet.tsx    # Panel daftar sahabat, kode & link undangan
+│   │   ├── ProfileSheet.tsx    # Panel edit profil & panduan install PWA
+│   │   ├── ActivitySheet.tsx   # Panel daftar reaksi & balasan masuk
+│   │   ├── AuthView.tsx        # Halaman Masuk / Daftar & tombol Mode Demo
+│   │   ├── MomentMedia.tsx     # Komponen pemutar foto/video 7s & thumbnail
+│   │   ├── Avatar.tsx          # Avatar inisial dengan gradien unik per user
+│   │   ├── Sheet.tsx           # Komponen bottom-sheet modal
+│   │   └── Icons.tsx           # Kumpulan ikon SVG ringan
+│   └── lib/
+│       ├── supabase.ts         # Inisialisasi Supabase client & helper URL media
+│       ├── api.ts              # Fungsi query/mutasi ke tabel & storage Supabase
+│       ├── media.ts            # Helper MediaRecorder 7s, crop persegi & kompresi gambar
+│       ├── format.ts           # Helper format waktu, tanggal kalender & perhitungan streak
+│       ├── demoData.ts         # Data awal untuk Mode Demo lokal
+│       └── types.ts            # Definisi tipe TypeScript
+├── supabase/
+│   └── schema.sql              # Skema SQL lengkap (Tabel, Trigger, RPC, RLS & Storage Bucket)
+└── .env.example                # Template environment variable Supabase
 ```
 
-Buka `http://localhost:3000` di browser. Kamu bisa langsung klik **Buka Demo** untuk mencoba kamera, video 7 detik, feed, dan kalender tanpa perlu mengisi database dulu.
-
 ---
 
-## 2. Setup Backend & Storage Gratis (Supabase)
+## 🛠️ Cara Menjalankan di Lokal
 
-1. Buat akun & project gratis di [supabase.com](https://supabase.com).
-2. Buka menu **SQL Editor** di dashboard Supabase, lalu *copy-paste* seluruh isi file [`supabase/schema.sql`](./supabase/schema.sql) dan klik **Run**.
-   - Script ini otomatis membuat tabel `profiles`, `friendships`, `moments`, `reactions`, `replies`, mengaktifkan *Row Level Security (RLS)*, *Realtime*, serta membuat bucket storage `moments` (mendukung foto & video hingga 10 MB).
-3. Buka **Project Settings → API**, salin **Project URL** dan **anon / publishable key**.
-4. Duplikat file `.env.example` menjadi `.env.local`, lalu isi nilainya:
-   ```env
-   NEXT_PUBLIC_SUPABASE_URL=https://xxxx.supabase.co
-   NEXT_PUBLIC_SUPABASE_ANON_KEY=eyJhbGci...
+1. **Install dependencies:**
+   ```bash
+   npm install
    ```
-5. Restart `npm run dev`.
+
+2. **Jalankan server development:**
+   ```bash
+   npm run dev
+   ```
+
+3. Buka `http://localhost:3000` di browser.  
+   *(Klik tombol **Buka Demo** di halaman awal jika ingin langsung mengetes kamera, video 7 detik, feed, dan kalender tanpa database).*
 
 ---
 
-## 3. Cara Push ke GitHub & Deploy Gratis di Vercel
+## ☁️ Setup Backend Gratis dengan Supabase
 
-### Push ke GitHub
-```bash
-git add .
-git commit -m "feat: initial Depong web app (Locket dark + 7s video)"
-git branch -M main
-git remote add origin https://github.com/USERNAME_ANDA/NAMA_REPO.git
-git push -u origin main
-```
+1. Buat project baru (Gratis) di [supabase.com](https://supabase.com).
+2. Buka menu **SQL Editor** di dashboard Supabase, lalu *copy-paste* seluruh isi file [`supabase/schema.sql`](./supabase/schema.sql) dan klik **Run**.
+3. Buka **Project Settings → API**, lalu salin **Project URL** dan **anon / publishable key**.
+4. Duplikat file `.env.example` menjadi `.env.local` dan isi nilainya:
+   ```env
+   NEXT_PUBLIC_SUPABASE_URL=https://YOUR_PROJECT_ID.supabase.co
+   NEXT_PUBLIC_SUPABASE_ANON_KEY=YOUR_SUPABASE_ANON_KEY
+   ```
+5. Jalankan ulang `npm run dev`.
 
-### Deploy Gratis di Vercel
-1. Masuk ke [vercel.com](https://vercel.com) menggunakan akun GitHub Anda.
-2. Klik **Add New… → Project**, lalu pilih repository GitHub ini.
-3. Pada bagian **Environment Variables**, tambahkan:
-   - `NEXT_PUBLIC_SUPABASE_URL`
-   - `NEXT_PUBLIC_SUPABASE_ANON_KEY`
-4. Klik **Deploy**. Setelah selesai, Anda akan mendapatkan domain `https://....vercel.app` (sudah HTTPS sehingga kamera & mikrofon langsung berfungsi di HP).
+---
+
+## 🌐 Deploy Gratis ke Vercel
+
+1. Push repository ini ke GitHub:
+   ```bash
+   git push -u origin main
+   ```
+2. Masuk ke [vercel.com](https://vercel.com) dengan akun GitHub Anda, lalu klik **Add New… → Project** dan import repository **`depong-widget`**.
+3. Tambahkan **Environment Variables** (`NEXT_PUBLIC_SUPABASE_URL` dan `NEXT_PUBLIC_SUPABASE_ANON_KEY`).
+4. Klik **Deploy** — aplikasi akan langsung aktif dengan domain HTTPS gratis sehingga akses kamera & mikrofon berjalan mulus di HP.
