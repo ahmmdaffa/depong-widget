@@ -3,20 +3,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { errorMessage, uploadMoment } from "@/lib/api";
 import {
-  applyFilterEffectOnCanvas,
   applyFilterToImageBlob,
-  baseMime,
   CAMERA_FILTERS,
   captureSquareFrame,
   composeDualCameraPhoto,
-  extFromMime,
-  getVideoDuration,
   MAX_UPLOAD_BYTES,
-  MAX_VIDEO_SECONDS,
-  pickVideoMimeType,
+  PHOTO_CAPTURE_SIZE,
   resizeImage,
 } from "@/lib/media";
-import type { MediaType } from "@/lib/types";
 import {
   IconBolt,
   IconChevronDown,
@@ -29,12 +23,9 @@ import {
   IconX,
 } from "./Icons";
 
-interface Captured {
+interface CapturedPhoto {
   blob: Blob;
   url: string;
-  type: MediaType;
-  duration: number | null;
-  mime: string;
   bakedFilterId: string;
 }
 
@@ -43,13 +34,7 @@ interface BackShot {
   url: string;
 }
 
-const RING_RADIUS = 36;
-const RING_CIRCUMFERENCE = 2 * Math.PI * RING_RADIUS;
-// 1.5 Mbps menghasilkan video 7 detik tajam (~900 KB) dan ringan agar langsung bisa dilihat pengguna lain
-const HIGH_VIDEO_BITRATE = 1_500_000;
-const HIGH_AUDIO_BITRATE = 64_000;
-
-const round1 = (n: number) => Math.round(n * 10) / 10;
+const RING_RADIUS = 38;
 
 export default function CameraView({
   userId,
@@ -57,29 +42,15 @@ export default function CameraView({
   notify,
   onSent,
   onOpenHistory,
-  onLocalMoment,
 }: {
   userId: string;
   friendCount: number;
   notify: (msg: string) => void;
   onSent: () => void;
   onOpenHistory: () => void;
-  onLocalMoment?: (input: {
-    url: string;
-    mediaType: MediaType;
-    duration: number | null;
-    caption: string;
-  }) => void;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
-  const audioRef = useRef<MediaStream | null>(null);
-  const recorderRef = useRef<MediaRecorder | null>(null);
-  const chunksRef = useRef<Blob[]>([]);
-  const recStartRef = useRef(0);
-  const rafRef = useRef(0);
-  const filterCanvasRafRef = useRef(0);
-  const stopTimerRef = useRef<number | undefined>(undefined);
   const bannerTimerRef = useRef<number | undefined>(undefined);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const capturedUrlRef = useRef<string | null>(null);
@@ -87,17 +58,14 @@ export default function CameraView({
   const swipeStartXRef = useRef<number | null>(null);
   const swipeCurrentXRef = useRef<number | null>(null);
 
-  const [mode, setMode] = useState<MediaType>("photo");
-  // Mode FOTO dimulai dari kamera belakang ("environment") dulu, lalu otomatis pindah ke kamera depan ("user")
+  // Sesi foto 2 bagian dimulai dari kamera belakang ("environment"), lalu otomatis ke depan ("user")
   const [facing, setFacing] = useState<"user" | "environment">("environment");
   const [backShot, setBackShot] = useState<BackShot | null>(null);
 
   const [cameraReady, setCameraReady] = useState(false);
   const [cameraError, setCameraError] = useState<string | null>(null);
   const [retryKey, setRetryKey] = useState(0);
-  const [recording, setRecording] = useState(false);
-  const [progress, setProgress] = useState(0);
-  const [captured, setCaptured] = useState<Captured | null>(null);
+  const [captured, setCaptured] = useState<CapturedPhoto | null>(null);
   const [caption, setCaption] = useState("");
   const [sending, setSending] = useState(false);
   const [flashOn, setFlashOn] = useState(false);
@@ -122,7 +90,7 @@ export default function CameraView({
     setBackShot(null);
   }, []);
 
-  // ---------- Kamera Resolusi Tinggi & Switching Depan/Belakang Mulus ----------
+  // ---------- Kamera Resolusi Tinggi ----------
   useEffect(() => {
     let cancelled = false;
 
@@ -134,7 +102,6 @@ export default function CameraView({
           );
         }
 
-        // Hentikan stream kamera sebelumnya terlebih dahulu agar kamera HP bisa ganti belakang -> depan tanpa gagal
         streamRef.current?.getTracks().forEach((t) => t.stop());
         streamRef.current = null;
 
@@ -143,15 +110,14 @@ export default function CameraView({
           stream = await navigator.mediaDevices.getUserMedia({
             video: {
               facingMode: { ideal: facing },
-              width: { ideal: 1280 },
-              height: { ideal: 720 },
-              frameRate: { ideal: 30 },
+              width: { ideal: 1920, min: 1280 },
+              height: { ideal: 1080, min: 720 },
             },
             audio: false,
           });
         } catch {
           stream = await navigator.mediaDevices.getUserMedia({
-            video: true,
+            video: { facingMode: { ideal: facing } },
             audio: false,
           });
         }
@@ -190,37 +156,15 @@ export default function CameraView({
     };
   }, [facing, retryKey]);
 
-  // Bersihkan semua resource saat komponen ditutup
   useEffect(() => {
     return () => {
-      window.clearTimeout(stopTimerRef.current);
       window.clearTimeout(bannerTimerRef.current);
-      cancelAnimationFrame(rafRef.current);
-      cancelAnimationFrame(filterCanvasRafRef.current);
-      const rec = recorderRef.current;
-      if (rec && rec.state !== "inactive") {
-        rec.onstop = null;
-        rec.stop();
-      }
-      audioRef.current?.getTracks().forEach((t) => t.stop());
       if (capturedUrlRef.current) URL.revokeObjectURL(capturedUrlRef.current);
       if (backShotUrlRef.current) URL.revokeObjectURL(backShotUrlRef.current);
     };
   }, []);
 
-  const acquireAudio = useCallback(async () => {
-    if (audioRef.current) return audioRef.current;
-    try {
-      audioRef.current = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: true, noiseSuppression: true },
-      });
-    } catch {
-      audioRef.current = null;
-    }
-    return audioRef.current;
-  }, []);
-
-  const showCaptured = useCallback((next: Captured) => {
+  const showCaptured = useCallback((next: CapturedPhoto) => {
     if (capturedUrlRef.current) URL.revokeObjectURL(capturedUrlRef.current);
     capturedUrlRef.current = next.url;
     setCaptured(next);
@@ -232,27 +176,13 @@ export default function CameraView({
     setCaptured(null);
     setCaption("");
     clearBackShot();
-    if (mode === "photo") {
-      setFacing("environment");
-    }
-  }, [clearBackShot, mode]);
-
-  function selectMode(next: MediaType) {
-    if (recording || captured) return;
-    clearBackShot();
-    setMode(next);
-    if (next === "video") {
-      setFacing("user");
-      void acquireAudio();
-    } else {
-      setFacing("environment");
-    }
-  }
+    setFacing("environment");
+  }, [clearBackShot]);
 
   async function flashThen<T>(fn: () => Promise<T>): Promise<T> {
     if (flashOn) {
       setFlashVisible(true);
-      await new Promise((r) => setTimeout(r, 180));
+      await new Promise((r) => setTimeout(r, 160));
     }
     try {
       return await fn();
@@ -261,7 +191,7 @@ export default function CameraView({
     }
   }
 
-  // ---------- Swipe Kanan / Kiri pada Tengah Gambar untuk Ganti Filter ----------
+  // ---------- Swipe Kanan / Kiri pada Gambar untuk Ganti Filter ----------
   function onSwipeStart(clientX: number) {
     swipeStartXRef.current = clientX;
     swipeCurrentXRef.current = clientX;
@@ -280,40 +210,33 @@ export default function CameraView({
     swipeCurrentXRef.current = null;
 
     if (Math.abs(deltaX) < 30) return;
-
-    if (deltaX < 0) {
-      selectFilterIndex(filterIdx + 1);
-    } else {
-      selectFilterIndex(filterIdx - 1);
-    }
+    if (deltaX < 0) selectFilterIndex(filterIdx + 1);
+    else selectFilterIndex(filterIdx - 1);
   }
 
-  // ---------- Sesi Foto 2x (1. Belakang Bingkai Besar -> 2. Depan Bingkai Kecil) ----------
+  // ---------- Sesi Foto 2 Bagian (1. Belakang Bingkai Besar -> 2. Depan Bingkai Kecil) ----------
   async function takePhoto() {
     const video = videoRef.current;
-    if (!video || !video.videoWidth) return;
+    if (!video || !video.videoWidth || captured) return;
     try {
       if (!backShot) {
-        // Jepretan 1: Foto Kamera Belakang (Bingkai Besar)
         const firstBlob = await flashThen(() =>
-          captureSquareFrame(video, 1080, facing === "user", CAMERA_FILTERS[0]),
+          captureSquareFrame(video, PHOTO_CAPTURE_SIZE, facing === "user", CAMERA_FILTERS[0]),
         );
         if (backShotUrlRef.current) URL.revokeObjectURL(backShotUrlRef.current);
         const url = URL.createObjectURL(firstBlob);
         backShotUrlRef.current = url;
         setBackShot({ blob: firstBlob, url });
-        // Otomatis ganti ke kamera depan untuk jepretan ke-2 (Bingkai Kecil)
         setFacing("user");
         notify("Foto belakang tersimpan! Sekarang ambil foto kamera depan 📸");
         return;
       }
 
-      // Jepretan 2: Foto Kamera Depan (Bingkai Kecil Kiri Atas) -> Gabungkan dengan Foto Belakang
       const combinedBlob = await flashThen(() =>
         composeDualCameraPhoto(
           backShot.blob,
           video,
-          1080,
+          PHOTO_CAPTURE_SIZE,
           facing === "user",
           CAMERA_FILTERS[0],
         ),
@@ -322,145 +245,11 @@ export default function CameraView({
       showCaptured({
         blob: combinedBlob,
         url: URL.createObjectURL(combinedBlob),
-        type: "photo",
-        duration: null,
-        mime: "image/jpeg",
         bakedFilterId: "normal",
       });
     } catch (err) {
       notify(errorMessage(err));
     }
-  }
-
-  // ---------- Video 7 Detik (Tajam & Ringan Agar Bisa Dilihat Pengguna Lain) ----------
-  const stopRecording = useCallback(() => {
-    window.clearTimeout(stopTimerRef.current);
-    cancelAnimationFrame(rafRef.current);
-    cancelAnimationFrame(filterCanvasRafRef.current);
-    const rec = recorderRef.current;
-    if (rec && rec.state !== "inactive") rec.stop();
-    recorderRef.current = null;
-    setRecording(false);
-    setProgress(0);
-  }, []);
-
-  async function startRecording() {
-    const stream = streamRef.current;
-    const videoEl = videoRef.current;
-    if (!stream || !videoEl) return;
-    if (typeof MediaRecorder === "undefined") {
-      notify("Browser ini belum mendukung rekam video.");
-      return;
-    }
-
-    const audio = await acquireAudio();
-    let videoTracks = stream.getVideoTracks();
-    const chosenFilter = activeFilter;
-
-    if (
-      videoEl.videoWidth > 0 &&
-      typeof HTMLCanvasElement.prototype.captureStream === "function" &&
-      chosenFilter.id !== "normal"
-    ) {
-      const vw = videoEl.videoWidth;
-      const vh = videoEl.videoHeight;
-      const side = Math.min(vw, vh);
-      const sx = (vw - side) / 2;
-      const sy = (vh - side) / 2;
-      const outSide = 720;
-
-      const recCanvas = document.createElement("canvas");
-      recCanvas.width = outSide;
-      recCanvas.height = outSide;
-      const ctx = recCanvas.getContext("2d");
-
-      if (ctx) {
-        ctx.imageSmoothingEnabled = true;
-        ctx.imageSmoothingQuality = "high";
-
-        const renderFrame = () => {
-          ctx.save();
-          if (chosenFilter.css !== "none") {
-            ctx.filter = chosenFilter.css;
-          }
-          ctx.drawImage(videoEl, sx, sy, side, side, 0, 0, outSide, outSide);
-          ctx.restore();
-
-          if (chosenFilter.id !== "normal") {
-            applyFilterEffectOnCanvas(ctx, outSide, outSide, chosenFilter);
-          }
-          filterCanvasRafRef.current = requestAnimationFrame(renderFrame);
-        };
-        renderFrame();
-        const canvasStream = recCanvas.captureStream(30);
-        if (canvasStream.getVideoTracks().length > 0) {
-          videoTracks = canvasStream.getVideoTracks();
-        }
-      }
-    }
-
-    const mixed = new MediaStream([...videoTracks, ...(audio?.getAudioTracks() ?? [])]);
-    const preferred = pickVideoMimeType();
-
-    let recorder: MediaRecorder;
-    try {
-      recorder = new MediaRecorder(mixed, {
-        mimeType: preferred,
-        videoBitsPerSecond: HIGH_VIDEO_BITRATE,
-        audioBitsPerSecond: HIGH_AUDIO_BITRATE,
-      });
-    } catch {
-      recorder = new MediaRecorder(mixed);
-    }
-
-    chunksRef.current = [];
-    recorder.ondataavailable = (e) => {
-      if (e.data.size > 0) chunksRef.current.push(e.data);
-    };
-    recorder.onstop = () => {
-      cancelAnimationFrame(filterCanvasRafRef.current);
-      const elapsed = (performance.now() - recStartRef.current) / 1000;
-      const mime = baseMime(recorder.mimeType || preferred || "video/webm");
-      const blob = new Blob(chunksRef.current, { type: mime });
-      chunksRef.current = [];
-      if (elapsed < 1) {
-        notify("Video terlalu singkat, rekam minimal 1 detik 🙂");
-        return;
-      }
-      showCaptured({
-        blob,
-        url: URL.createObjectURL(blob),
-        type: "video",
-        duration: round1(Math.min(MAX_VIDEO_SECONDS, elapsed)),
-        mime,
-        bakedFilterId: chosenFilter.id,
-      });
-    };
-
-    recorder.start(250);
-    recorderRef.current = recorder;
-    recStartRef.current = performance.now();
-    setRecording(true);
-
-    const tick = () => {
-      const ratio = Math.min(
-        1,
-        (performance.now() - recStartRef.current) / (MAX_VIDEO_SECONDS * 1000),
-      );
-      setProgress(ratio);
-      if (ratio < 1 && recorderRef.current?.state === "recording") {
-        rafRef.current = requestAnimationFrame(tick);
-      }
-    };
-    rafRef.current = requestAnimationFrame(tick);
-    stopTimerRef.current = window.setTimeout(stopRecording, MAX_VIDEO_SECONDS * 1000);
-  }
-
-  function handleShutter() {
-    if (captured || !cameraReady) return;
-    if (mode === "photo") void takePhoto();
-    else if (recording) stopRecording();
-    else void startRecording();
   }
 
   // ---------- Galeri ----------
@@ -470,91 +259,45 @@ export default function CameraView({
     if (!file) return;
     try {
       clearBackShot();
-      if (file.type.startsWith("image/")) {
-        const blob = await resizeImage(file, 1080);
-        showCaptured({
-          blob,
-          url: URL.createObjectURL(blob),
-          type: "photo",
-          duration: null,
-          mime: "image/jpeg",
-          bakedFilterId: "normal",
-        });
-      } else if (file.type.startsWith("video/")) {
-        const duration = await getVideoDuration(file);
-        if (!Number.isFinite(duration) || duration > MAX_VIDEO_SECONDS + 0.5) {
-          notify(
-            `Video maksimal ${MAX_VIDEO_SECONDS} detik (video ini ${duration.toFixed(1)} detik)`,
-          );
-          return;
-        }
-        if (file.size > MAX_UPLOAD_BYTES) {
-          notify("Ukuran video maksimal 10 MB");
-          return;
-        }
-        showCaptured({
-          blob: file,
-          url: URL.createObjectURL(file),
-          type: "video",
-          duration: round1(duration),
-          mime: file.type,
-          bakedFilterId: "normal",
-        });
-      } else {
-        notify("Pilih foto atau video ya");
+      if (!file.type.startsWith("image/")) {
+        notify("Pilih file foto dari galeri ya 📸");
+        return;
       }
+      const blob = await resizeImage(file, PHOTO_CAPTURE_SIZE);
+      showCaptured({
+        blob,
+        url: URL.createObjectURL(blob),
+        bakedFilterId: "normal",
+      });
     } catch (err) {
       notify(errorMessage(err));
     }
   }
 
-  // ---------- Siapkan Blob Final (Bake Filter untuk Foto) ----------
   async function getFinalBlob(): Promise<Blob> {
-    if (!captured) throw new Error("Tidak ada media");
-    if (
-      captured.type === "photo" &&
-      activeFilter.id !== "normal" &&
-      captured.bakedFilterId !== activeFilter.id
-    ) {
+    if (!captured) throw new Error("Tidak ada foto");
+    if (activeFilter.id !== "normal" && captured.bakedFilterId !== activeFilter.id) {
       return applyFilterToImageBlob(captured.blob, activeFilter);
     }
     return captured.blob;
   }
 
-  // ---------- Kirim ----------
   async function send() {
     if (!captured || sending) return;
     setSending(true);
     try {
       const finalBlob = await getFinalBlob();
       if (finalBlob.size > MAX_UPLOAD_BYTES) {
-        notify("File terlalu besar (maks 10 MB)");
-        return;
-      }
-
-      if (onLocalMoment) {
-        const persistedUrl = URL.createObjectURL(finalBlob);
-        onLocalMoment({
-          url: persistedUrl,
-          mediaType: captured.type,
-          duration: captured.duration,
-          caption,
-        });
-        discard();
-        notify("Momen ditambahkan ke Feed 💛");
-        onSent();
+        notify("Ukuran foto terlalu besar (maks 10 MB)");
         return;
       }
       await uploadMoment({
         userId,
         blob: finalBlob,
-        mime: captured.mime,
-        mediaType: captured.type,
-        duration: captured.duration,
         caption,
       });
       discard();
-      notify(friendCount > 0 ? `Terkirim ke ${friendCount} sahabat 💛` : "Momen tersimpan 💛");
+      notify(friendCount > 0 ? `Terkirim ke ${friendCount} sahabat 💛` : "Foto tersimpan 💛");
       onSent();
     } catch (err) {
       notify(errorMessage(err));
@@ -569,23 +312,21 @@ export default function CameraView({
     const url = URL.createObjectURL(finalBlob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `depong-${Date.now()}.${extFromMime(captured.mime)}`;
+    a.download = `depong-${Date.now()}.jpg`;
     a.click();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
 
-  const elapsedSec = Math.min(MAX_VIDEO_SECONDS, Math.floor(progress * MAX_VIDEO_SECONDS));
   const shouldApplyPreviewFilter =
     !captured || captured.bakedFilterId !== activeFilter.id;
 
-  const isVideoMirror = facing === "user" && (!captured || captured.type === "video");
   const filterCssValue =
     shouldApplyPreviewFilter && activeFilter.css !== "none" ? activeFilter.css : undefined;
 
-  const videoFilterStyle: React.CSSProperties = {
+  const liveVideoStyle: React.CSSProperties = {
     filter: filterCssValue,
     WebkitFilter: filterCssValue,
-    transform: isVideoMirror ? "scaleX(-1) translateZ(0)" : "translateZ(0)",
+    transform: !captured && facing === "user" ? "scaleX(-1) translateZ(0)" : "translateZ(0)",
   };
 
   const photoFilterStyle: React.CSSProperties = {
@@ -595,8 +336,8 @@ export default function CameraView({
   };
 
   return (
-    <div className="flex h-full flex-col items-center justify-between gap-4 px-4 pt-2 pb-28">
-      {/* Viewfinder squircle */}
+    <div className="flex h-full flex-col items-center justify-between gap-3 px-3 pt-1 pb-24">
+      {/* Bingkai Kamera (Viewfinder) Diperlebar & Diperbesar Memanfaatkan Ruang Kosong */}
       <div
         onTouchStart={(e) => onSwipeStart(e.touches[0].clientX)}
         onTouchMove={(e) => onSwipeMove(e.touches[0].clientX)}
@@ -604,9 +345,8 @@ export default function CameraView({
         onMouseDown={(e) => onSwipeStart(e.clientX)}
         onMouseMove={(e) => onSwipeMove(e.clientX)}
         onMouseUp={(e) => onSwipeEnd(e.clientX)}
-        className="relative aspect-square w-full touch-pan-y overflow-hidden rounded-[44px] border border-white/10 bg-panel shadow-2xl select-none"
+        className="relative w-full flex-1 min-h-[370px] max-h-[540px] touch-pan-y overflow-hidden rounded-[44px] border border-white/10 bg-panel shadow-2xl select-none"
       >
-        {/* Saat Tahap 2 Foto (backShot sudah diambil), tampilkan Foto Belakang di Bingkai Besar */}
         {backShot && !captured && (
           // eslint-disable-next-line @next/next/no-img-element
           <img
@@ -617,9 +357,8 @@ export default function CameraView({
           />
         )}
 
-        {/* Satu elemen <video> tunggal yang otomatis mengecil ke Bingkai Kecil Kiri Atas pada Tahap 2/2 */}
         <div
-          className={` transition-all duration-300 ${
+          className={`transition-all duration-300 ${
             backShot && !captured
               ? "absolute z-10 overflow-hidden border-2 border-ink/85 bg-panel shadow-2xl"
               : "h-full w-full"
@@ -627,18 +366,18 @@ export default function CameraView({
           style={
             backShot && !captured
               ? {
-                  left: "6.8%",
-                  top: "6.8%",
-                  width: "27.5%",
-                  height: "34.5%",
-                  borderRadius: "16px",
+                  left: "6.5%",
+                  top: "6.5%",
+                  width: "28%",
+                  height: "35%",
+                  borderRadius: "18px",
                 }
               : undefined
           }
         >
           <video
             ref={videoRef}
-            style={videoFilterStyle}
+            style={liveVideoStyle}
             className="h-full w-full object-cover transition-[filter] duration-200"
             playsInline
             muted
@@ -646,26 +385,15 @@ export default function CameraView({
           />
         </div>
 
-        {captured &&
-          (captured.type === "photo" ? (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img
-              src={captured.url}
-              alt="Pratinjau"
-              style={photoFilterStyle}
-              className="absolute inset-0 h-full w-full object-cover transition-[filter] duration-200"
-            />
-          ) : (
-            <video
-              src={captured.url}
-              style={videoFilterStyle}
-              className="absolute inset-0 h-full w-full object-cover transition-[filter] duration-200"
-              playsInline
-              autoPlay
-              loop
-              muted
-            />
-          ))}
+        {captured && (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src={captured.url}
+            alt="Pratinjau Hasil Foto"
+            style={photoFilterStyle}
+            className="absolute inset-0 h-full w-full object-cover transition-[filter] duration-200"
+          />
+        )}
 
         {/* Overlay Color-Grading Live */}
         {shouldApplyPreviewFilter && activeFilter.tint && activeFilter.tint[3] > 0 && (
@@ -711,7 +439,7 @@ export default function CameraView({
                 >
                   Coba lagi
                 </button>
-                <p className="text-xs text-muted">Atau pilih foto/video dari galeri ↓</p>
+                <p className="text-xs text-muted">Atau pilih foto dari galeri ↓</p>
               </>
             ) : (
               <p className="text-sm text-muted">Membuka kamera…</p>
@@ -719,7 +447,7 @@ export default function CameraView({
           </div>
         )}
 
-        {/* Kontrol atas viewfinder */}
+        {/* Kontrol Atas Viewfinder */}
         {!captured && (
           <div className="absolute inset-x-4 top-4 z-10 flex items-center justify-between">
             {!backShot ? (
@@ -736,20 +464,9 @@ export default function CameraView({
               <span className="h-10 w-10" />
             )}
 
-            {recording ? (
-              <span className="flex items-center gap-1.5 rounded-full bg-black/65 px-3 py-1.5 text-xs font-semibold backdrop-blur-md">
-                <span className="h-2 w-2 animate-pulse rounded-full bg-red-500" />
-                0:0{elapsedSec} / 0:0{MAX_VIDEO_SECONDS}
-              </span>
-            ) : mode === "photo" ? (
-              <span className="rounded-full bg-black/55 px-3.5 py-1.5 text-xs font-bold text-gold backdrop-blur-md">
-                {!backShot ? "1/2 • Foto Belakang" : "2/2 • Foto Depan"}
-              </span>
-            ) : (
-              <span className="rounded-full bg-black/45 px-3 py-1.5 text-xs font-semibold text-white/90 backdrop-blur-md">
-                {`HD Video ${MAX_VIDEO_SECONDS}s`}
-              </span>
-            )}
+            <span className="rounded-full bg-black/55 px-3.5 py-1.5 text-xs font-bold text-gold backdrop-blur-md">
+              {!backShot ? "1/2 • Foto Belakang" : "2/2 • Foto Depan"}
+            </span>
 
             {backShot ? (
               <button
@@ -777,7 +494,7 @@ export default function CameraView({
         )}
 
         {/* Satu Kapsul Filter Tunggal yang Rapi */}
-        {(cameraReady || captured) && !recording && (
+        {(cameraReady || captured) && (
           <div
             className={`absolute inset-x-0 z-10 flex flex-col items-center gap-1.5 ${
               captured ? "bottom-16" : "bottom-4"
@@ -833,9 +550,9 @@ export default function CameraView({
           </div>
         )}
 
-        {/* Caption ala Locket saat pratinjau */}
+        {/* Caption saat pratinjau hasil foto */}
         {captured && (
-          <div className="absolute inset-x-0 bottom-5 z-10 flex justify-center px-6">
+          <div className="absolute inset-x-0 bottom-4 z-10 flex justify-center px-6">
             <input
               value={caption}
               onChange={(e) => setCaption(e.target.value.slice(0, 60))}
@@ -845,17 +562,11 @@ export default function CameraView({
             />
           </div>
         )}
-
-        {captured?.type === "video" && (
-          <span className="absolute top-4 left-4 z-10 rounded-full bg-black/55 px-3 py-1.5 text-xs font-semibold backdrop-blur-md">
-            🎥 HD {captured.duration?.toFixed(1)}s
-          </span>
-        )}
       </div>
 
-      {/* Kontrol bawah */}
+      {/* Kontrol Bawah (Tanpa Tab Pemilih Foto/Video) */}
       {captured ? (
-        <div className="flex w-full flex-col items-center gap-5">
+        <div className="flex w-full shrink-0 flex-col items-center gap-2">
           <div className="flex w-full items-center justify-around px-6">
             <button
               onClick={discard}
@@ -881,7 +592,7 @@ export default function CameraView({
               onClick={() => void download()}
               disabled={sending}
               className="flex h-12 w-12 items-center justify-center rounded-full bg-panel-2 text-white"
-              aria-label="Simpan ke perangkat"
+              aria-label="Simpan foto"
             >
               <IconDownload size={20} />
             </button>
@@ -891,95 +602,37 @@ export default function CameraView({
           </p>
         </div>
       ) : (
-        <div className="flex w-full flex-col items-center gap-4">
-          {/* Toggle FOTO / VIDEO 7s */}
-          <div className="inline-flex rounded-full border border-white/10 bg-panel p-1">
-            <button
-              onClick={() => selectMode("photo")}
-              disabled={recording}
-              className={`rounded-full px-5 py-1.5 text-xs font-bold transition ${
-                mode === "photo" ? "bg-gold text-black" : "text-muted"
-              }`}
-            >
-              FOTO
-            </button>
-            <button
-              onClick={() => selectMode("video")}
-              disabled={recording}
-              className={`flex items-center gap-1.5 rounded-full px-5 py-1.5 text-xs font-bold transition ${
-                mode === "video" ? "bg-gold text-black" : "text-muted"
-              }`}
-            >
-              <span className="h-2 w-2 rounded-full bg-red-500" />
-              VIDEO {MAX_VIDEO_SECONDS}s
-            </button>
-          </div>
-
+        <div className="flex w-full shrink-0 flex-col items-center gap-2">
           <div className="flex w-full items-center justify-around px-6">
             <button
               onClick={() => fileInputRef.current?.click()}
-              disabled={recording}
               className="flex h-12 w-12 items-center justify-center rounded-2xl border border-white/15 bg-panel-2 text-white/90"
               aria-label="Galeri"
             >
               <IconImage size={22} />
             </button>
 
-            {/* Shutter ring emas + progress 7 detik */}
             <button
-              onClick={handleShutter}
+              onClick={() => void takePhoto()}
               disabled={!cameraReady}
-              className="relative flex h-20 w-20 items-center justify-center transition active:scale-95 disabled:opacity-50"
-              aria-label={
-                mode === "photo"
-                  ? !backShot
-                    ? "Ambil foto belakang (1/2)"
-                    : "Ambil foto depan (2/2)"
-                  : recording
-                    ? "Stop rekam"
-                    : "Mulai rekam"
-              }
+              className="relative flex h-21 w-21 items-center justify-center transition active:scale-95 disabled:opacity-50"
+              aria-label={!backShot ? "Ambil foto belakang (1/2)" : "Ambil foto depan (2/2)"}
             >
-              <svg className="absolute inset-0 -rotate-90" width="80" height="80" viewBox="0 0 80 80">
+              <svg className="absolute inset-0 -rotate-90" width="84" height="84" viewBox="0 0 84 84">
                 <circle
-                  cx="40"
-                  cy="40"
+                  cx="42"
+                  cy="42"
                   r={RING_RADIUS}
                   fill="none"
                   stroke="#f5c451"
-                  strokeWidth="4"
-                  opacity={recording ? 0.3 : 1}
+                  strokeWidth="4.5"
                 />
-                {recording && (
-                  <circle
-                    cx="40"
-                    cy="40"
-                    r={RING_RADIUS}
-                    fill="none"
-                    stroke="#f5c451"
-                    strokeWidth="4"
-                    strokeLinecap="round"
-                    strokeDasharray={RING_CIRCUMFERENCE}
-                    strokeDashoffset={RING_CIRCUMFERENCE * (1 - progress)}
-                  />
-                )}
               </svg>
-              <span
-                className={`flex items-center justify-center rounded-full transition-all duration-200 ${
-                  recording ? "h-[62px] w-[62px] bg-white/15" : "h-[62px] w-[62px] bg-white"
-                }`}
-              >
-                {recording ? (
-                  <span className="h-6 w-6 rounded-md bg-red-500" />
-                ) : (
-                  mode === "video" && <span className="h-5 w-5 rounded-full bg-red-500" />
-                )}
-              </span>
+              <span className="h-[66px] w-[66px] rounded-full bg-white transition-all duration-200" />
             </button>
 
             <button
               onClick={() => setFacing((f) => (f === "user" ? "environment" : "user"))}
-              disabled={recording}
               className="flex h-12 w-12 items-center justify-center rounded-full bg-panel-2 text-white/90 transition active:rotate-180"
               aria-label="Ganti kamera"
             >
@@ -1000,7 +653,7 @@ export default function CameraView({
       <input
         ref={fileInputRef}
         type="file"
-        accept="image/*,video/*"
+        accept="image/*"
         className="hidden"
         onChange={handlePickFile}
       />

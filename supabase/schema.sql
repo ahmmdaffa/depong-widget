@@ -135,13 +135,12 @@ as $$
      or (user_id = target and friend_id = auth.uid());
 $$;
 
--- ---------- MOMENTS (foto / video 7 detik) ----------
+-- ---------- MOMENTS (foto momen sahabat) ----------
 create table if not exists public.moments (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null references public.profiles (id) on delete cascade,
   media_path text not null,
-  media_type text not null check (media_type in ('photo', 'video')),
-  duration numeric(4, 1) check (duration is null or duration <= 7.5),
+  media_type text not null default 'photo' check (media_type in ('photo')),
   caption text check (char_length(caption) <= 60),
   created_at timestamptz not null default now()
 );
@@ -302,14 +301,14 @@ begin
 end;
 $$;
 
--- ---------- STORAGE (bucket media foto & video) ----------
+-- ---------- STORAGE (bucket media foto) ----------
 insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
 values (
   'moments',
   'moments',
   true,
   10485760, -- 10 MB per file
-  array['image/jpeg', 'image/png', 'image/webp', 'video/mp4', 'video/webm', 'video/quicktime']
+  array['image/jpeg', 'image/png', 'image/webp']
 )
 on conflict (id) do update
   set public = excluded.public,

@@ -1,12 +1,11 @@
-export const MAX_VIDEO_SECONDS = 7;
-export const MAX_UPLOAD_BYTES = 10 * 1024 * 1024; // 10 MB (sama dengan limit bucket)
+export const MAX_UPLOAD_BYTES = 10 * 1024 * 1024; // 10 MB
+export const PHOTO_CAPTURE_SIZE = 1440; // Resolusi foto tinggi (1440x1440) agar tajam & tidak kecil
 
 export interface CameraFilter {
   id: string;
   name: string;
   badge: string;
   css: string;
-  /** Warna overlay (r, g, b, alpha) agar filter tetap terlihat jelas di iOS Safari & semua HP */
   tint: [number, number, number, number] | null;
   blendMode?: GlobalCompositeOperation;
   vignette?: number;
@@ -14,8 +13,7 @@ export interface CameraFilter {
 
 /**
  * Daftar filter kamera.
- * Urutan paling kiri (index 0) adalah Normal (tanpa filter) —
- * swipe ke kanan/kiri untuk mengganti filter, dan swipe ke paling kiri untuk kembali Normal.
+ * Paling kiri (index 0) adalah Normal (tanpa filter).
  */
 export const CAMERA_FILTERS: CameraFilter[] = [
   {
@@ -80,10 +78,6 @@ export const CAMERA_FILTERS: CameraFilter[] = [
   },
 ];
 
-/**
- * Terapkan efek filter langsung ke permukaan Canvas 2D.
- * Mendukung browser yang tidak memiliki ctx.filter (seperti Safari iOS).
- */
 export function applyFilterEffectOnCanvas(
   ctx: CanvasRenderingContext2D,
   width: number,
@@ -92,7 +86,6 @@ export function applyFilterEffectOnCanvas(
 ) {
   if (!filter || filter.id === "normal") return;
 
-  // Untuk Mono B&W, konversi piksel grayscale + kontras agar 100% bekerja di iOS Safari
   if (filter.id === "mono") {
     try {
       const imgData = ctx.getImageData(0, 0, width, height);
@@ -112,7 +105,6 @@ export function applyFilterEffectOnCanvas(
     }
   }
 
-  // Color tint grading layer
   if (filter.tint && filter.tint[3] > 0) {
     const [r, g, b, a] = filter.tint;
     ctx.save();
@@ -124,7 +116,6 @@ export function applyFilterEffectOnCanvas(
     ctx.restore();
   }
 
-  // Soft vignette untuk kedalaman visual
   if (filter.vignette && filter.vignette > 0) {
     ctx.save();
     const grad = ctx.createRadialGradient(
@@ -143,54 +134,7 @@ export function applyFilterEffectOnCanvas(
   }
 }
 
-/** Pilih format rekaman terbaik. MP4/VP9 diutamakan agar tajam di iPhone & Android. */
-export function pickVideoMimeType(): string | undefined {
-  if (typeof MediaRecorder === "undefined") return undefined;
-  const candidates = [
-    "video/mp4;codecs=avc1.640028,mp4a.40.2",
-    "video/mp4;codecs=avc1.42E01E,mp4a.40.2",
-    "video/mp4",
-    "video/webm;codecs=vp9,opus",
-    "video/webm;codecs=vp8,opus",
-    "video/webm",
-  ];
-  return candidates.find((type) => MediaRecorder.isTypeSupported(type));
-}
-
-export function baseMime(mime: string): string {
-  return mime.split(";")[0].trim().toLowerCase();
-}
-
-export function extFromMime(mime: string): string {
-  const m = baseMime(mime);
-  if (m === "video/mp4") return "mp4";
-  if (m === "video/webm") return "webm";
-  if (m === "video/quicktime") return "mov";
-  if (m === "image/png") return "png";
-  if (m === "image/webp") return "webp";
-  return "jpg";
-}
-
-export function getVideoDuration(file: Blob): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const url = URL.createObjectURL(file);
-    const video = document.createElement("video");
-    video.preload = "metadata";
-    video.muted = true;
-    video.onloadedmetadata = () => {
-      const d = video.duration;
-      URL.revokeObjectURL(url);
-      resolve(d);
-    };
-    video.onerror = () => {
-      URL.revokeObjectURL(url);
-      reject(new Error("Video tidak bisa dibaca"));
-    };
-    video.src = url;
-  });
-}
-
-function canvasToJpeg(canvas: HTMLCanvasElement, quality = 0.94): Promise<Blob> {
+function canvasToJpeg(canvas: HTMLCanvasElement, quality = 0.93): Promise<Blob> {
   return new Promise((resolve, reject) => {
     canvas.toBlob(
       (blob) => (blob ? resolve(blob) : reject(new Error("Gagal memproses gambar"))),
@@ -200,19 +144,19 @@ function canvasToJpeg(canvas: HTMLCanvasElement, quality = 0.94): Promise<Blob> 
   });
 }
 
-/** Ambil frame persegi beresolusi tinggi (crop tengah) dari video kamera. */
+/** Ambil frame foto beresolusi tinggi (1440x1440) dari kamera. */
 export function captureSquareFrame(
   video: HTMLVideoElement,
-  size = 1440,
+  size = PHOTO_CAPTURE_SIZE,
   mirror = false,
   filter?: CameraFilter,
 ): Promise<Blob> {
-  const vw = video.videoWidth;
-  const vh = video.videoHeight;
+  const vw = video.videoWidth || size;
+  const vh = video.videoHeight || size;
   const side = Math.min(vw, vh);
   const sx = (vw - side) / 2;
   const sy = (vh - side) / 2;
-  const out = Math.min(size, Math.max(side, 1080));
+  const out = size;
 
   const canvas = document.createElement("canvas");
   canvas.width = out;
@@ -237,17 +181,18 @@ export function captureSquareFrame(
     applyFilterEffectOnCanvas(ctx, out, out, filter);
   }
 
-  return canvasToJpeg(canvas, 0.92);
+  return canvasToJpeg(canvas);
 }
 
 /**
- * Gabungkan 2 foto (Kamera Belakang = Bingkai Besar, Kamera Depan = Bingkai Kecil di Kiri Atas)
- * sesuai tata letak mockup Dual-Camera.
+ * Gabungkan 2 foto beresolusi tinggi (1440x1440):
+ * - Kamera Belakang = Bingkai Besar
+ * - Kamera Depan = Bingkai Kecil di Pojok Kiri Atas
  */
 export async function composeDualCameraPhoto(
   backPhotoBlob: Blob,
   frontVideo: HTMLVideoElement,
-  size = 1080,
+  size = PHOTO_CAPTURE_SIZE,
   mirrorFront = true,
   filter?: CameraFilter,
 ): Promise<Blob> {
@@ -269,11 +214,11 @@ export async function composeDualCameraPhoto(
   ctx.drawImage(backBitmap, 0, 0, out, out);
   backBitmap.close();
 
-  // 2. Gambar Bingkai Kecil di Kiri Atas (Kamera Depan) sesuai proporsi mockup
-  const pipX = Math.round(out * 0.068);
-  const pipY = Math.round(out * 0.068);
-  const pipW = Math.round(out * 0.275);
-  const pipH = Math.round(out * 0.345);
+  // 2. Gambar Bingkai Kecil di Kiri Atas (Kamera Depan)
+  const pipX = Math.round(out * 0.065);
+  const pipY = Math.round(out * 0.065);
+  const pipW = Math.round(out * 0.28);
+  const pipH = Math.round(out * 0.35);
   const pipR = Math.round(out * 0.042);
 
   const vw = frontVideo.videoWidth || out;
@@ -293,7 +238,6 @@ export async function composeDualCameraPhoto(
     sy = (vh - sh) / 2;
   }
 
-  // Bayangan lembut di belakang bingkai kecil
   ctx.save();
   ctx.shadowColor = "rgba(0, 0, 0, 0.45)";
   ctx.shadowBlur = Math.round(out * 0.022);
@@ -304,7 +248,6 @@ export async function composeDualCameraPhoto(
   ctx.fill();
   ctx.restore();
 
-  // Isi foto kamera depan di dalam bingkai kecil
   ctx.save();
   ctx.beginPath();
   ctx.roundRect(pipX, pipY, pipW, pipH, pipR);
@@ -318,11 +261,10 @@ export async function composeDualCameraPhoto(
   }
   ctx.restore();
 
-  // Garis tepi (border) halus pada bingkai kecil
   ctx.save();
   ctx.beginPath();
   ctx.roundRect(pipX, pipY, pipW, pipH, pipR);
-  ctx.lineWidth = Math.max(3, Math.round(out * 0.0045));
+  ctx.lineWidth = Math.max(4, Math.round(out * 0.0045));
   ctx.strokeStyle = "rgba(15, 15, 18, 0.85)";
   ctx.stroke();
   ctx.restore();
@@ -331,10 +273,10 @@ export async function composeDualCameraPhoto(
     applyFilterEffectOnCanvas(ctx, out, out, filter);
   }
 
-  return canvasToJpeg(canvas, 0.92);
+  return canvasToJpeg(canvas);
 }
 
-/** Terapkan filter pada Blob gambar yang sudah diambil (misal saat user ganti filter di layar preview). */
+/** Terapkan filter pada Blob gambar yang sudah diambil. */
 export async function applyFilterToImageBlob(
   sourceBlob: Blob,
   filter: CameraFilter,
@@ -362,11 +304,11 @@ export async function applyFilterToImageBlob(
   bitmap.close();
 
   applyFilterEffectOnCanvas(ctx, w, h, filter);
-  return canvasToJpeg(canvas, 0.94);
+  return canvasToJpeg(canvas);
 }
 
-/** Perkecil gambar dari galeri dengan tetap menjaga ketajaman tinggi. */
-export async function resizeImage(file: Blob, maxSide = 1600): Promise<Blob> {
+/** Perkecil gambar dari galeri ke resolusi tajam 1440px. */
+export async function resizeImage(file: Blob, maxSide = PHOTO_CAPTURE_SIZE): Promise<Blob> {
   const bitmap = await createImageBitmap(file);
   const scale = Math.min(1, maxSide / Math.max(bitmap.width, bitmap.height));
   const w = Math.round(bitmap.width * scale);
@@ -380,5 +322,5 @@ export async function resizeImage(file: Blob, maxSide = 1600): Promise<Blob> {
   ctx.imageSmoothingQuality = "high";
   ctx.drawImage(bitmap, 0, 0, w, h);
   bitmap.close();
-  return canvasToJpeg(canvas, 0.94);
+  return canvasToJpeg(canvas);
 }

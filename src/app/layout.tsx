@@ -4,7 +4,7 @@ import "./globals.css";
 export const metadata: Metadata = {
   title: "Depong — Momen sahabat, langsung di layar",
   description:
-    "Kirim foto & video 7 detik ke sahabat terdekatmu. Web app ala Locket yang bisa di-install di HP.",
+    "Kirim foto momen ke sahabat terdekatmu. Web app ala Locket yang bisa di-install di HP.",
   applicationName: "Depong",
   appleWebApp: {
     capable: true,

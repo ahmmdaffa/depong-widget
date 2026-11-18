@@ -1,71 +1,30 @@
 import { promises as fs } from "fs";
 import path from "path";
 import { NextResponse } from "next/server";
-import { createDemoAdminUsers, createInitialDemoMoments } from "@/lib/demoData";
-import type { AdminUserSummary, Moment, Reply } from "@/lib/types";
-
-export interface StoredAccount extends AdminUserSummary {
-  password?: string;
-}
-
-export interface StoreShape {
-  accounts: StoredAccount[];
-  friendships: { user_id: string; friend_id: string; created_at: string }[];
-  moments: Moment[];
-  replies: Reply[];
-  deletedIds: string[];
-  deletedMomentIds?: string[];
-  removedFriendKeys?: string[];
-  updatedAt: number;
-}
+import {
+  coerceStore,
+  emptyStore,
+  friendPairKey,
+  isFriendshipActive,
+  MEDIA_PLACEHOLDER,
+  type StoreShape,
+} from "@/lib/storeTypes";
+import type { Moment } from "@/lib/types";
 
 const STORE_FILE =
   process.env.VERCEL || process.env.NODE_ENV === "production"
     ? path.join("/tmp", "depong-store.json")
     : path.join(process.cwd(), ".depong-store.json");
 
-function createDefaultStore(): StoreShape {
-  const seedUsers = createDemoAdminUsers();
-  const seedMoments = createInitialDemoMoments();
-  const nowIso = new Date().toISOString();
-
-  const friendships: { user_id: string; friend_id: string; created_at: string }[] = [];
-  const mainId = seedUsers[0]?.id ?? "demo-user-daffa";
-  for (const u of seedUsers.slice(1, 5)) {
-    friendships.push({ user_id: mainId, friend_id: u.id, created_at: nowIso });
-    friendships.push({ user_id: u.id, friend_id: mainId, created_at: nowIso });
-  }
-
-  return {
-    accounts: seedUsers,
-    friendships,
-    moments: seedMoments,
-    replies: [],
-    deletedIds: [],
-    updatedAt: Date.now(),
-  };
-}
-
 async function readStore(): Promise<StoreShape> {
   try {
     const raw = await fs.readFile(STORE_FILE, "utf-8");
-    const parsed = JSON.parse(raw) as Partial<StoreShape>;
-    if (Array.isArray(parsed.accounts) && Array.isArray(parsed.moments)) {
-      return {
-        accounts: parsed.accounts,
-        friendships: parsed.friendships ?? [],
-        moments: parsed.moments,
-        replies: parsed.replies ?? [],
-        deletedIds: parsed.deletedIds ?? [],
-        deletedMomentIds: parsed.deletedMomentIds ?? [],
-        removedFriendKeys: parsed.removedFriendKeys ?? [],
-        updatedAt: parsed.updatedAt ?? Date.now(),
-      };
-    }
+    const parsed = coerceStore(JSON.parse(raw));
+    if (parsed) return parsed;
   } catch {
-    // File belum ada, buat default
+    // Buat store baru bila belum ada
   }
-  const initial = createDefaultStore();
+  const initial = emptyStore();
   await writeStore(initial);
   return initial;
 }
@@ -78,33 +37,29 @@ async function writeStore(store: StoreShape): Promise<void> {
   }
 }
 
-function friendPairKey(u1: string, u2: string): string {
-  return u1 < u2 ? `${u1}:${u2}` : `${u2}:${u1}`;
-}
-
 function recomputeStats(store: StoreShape): StoreShape {
   const deleted = new Set(store.deletedIds);
-  const deletedMoments = new Set(store.deletedMomentIds ?? []);
-  const removedFriends = new Set(store.removedFriendKeys ?? []);
+  const deletedMoments = new Set(store.deletedMomentIds);
 
   store.accounts = store.accounts.filter((a) => !deleted.has(a.id));
   store.moments = store.moments.filter(
     (m) =>
       !deleted.has(m.user_id) &&
       !deletedMoments.has(m.id) &&
-      !m.media_path.startsWith("blob:"),
+      typeof m.media_path === "string" &&
+      !m.media_path.startsWith("blob:") &&
+      !m.media_path.startsWith("data:video/"),
   );
   store.friendships = store.friendships.filter(
     (f) =>
       !deleted.has(f.user_id) &&
       !deleted.has(f.friend_id) &&
-      !removedFriends.has(friendPairKey(f.user_id, f.friend_id)),
+      isFriendshipActive(f, store.removedFriends),
   );
 
   for (const acc of store.accounts) {
     const userMoments = store.moments.filter((m) => m.user_id === acc.id);
     acc.moments_count = userMoments.length;
-    acc.videos_count = userMoments.filter((m) => m.media_type === "video").length;
     const latest = userMoments
       .map((m) => m.created_at)
       .sort()
@@ -136,23 +91,23 @@ export async function POST(req: Request) {
 
   const store = await readStore();
 
-  // Sinkronkan data dari client agar akun baru tidak pernah hilang di serverless
   if (body.clientStore) {
     const cs = body.clientStore;
-    const deleted = new Set([...(store.deletedIds ?? []), ...(cs.deletedIds ?? [])]);
+    const deleted = new Set([...store.deletedIds, ...(cs.deletedIds ?? [])]);
     store.deletedIds = [...deleted];
 
     const deletedMoments = new Set([
-      ...(store.deletedMomentIds ?? []),
+      ...store.deletedMomentIds,
       ...(cs.deletedMomentIds ?? []),
     ]);
     store.deletedMomentIds = [...deletedMoments];
 
-    const removedFriends = new Set([
-      ...(store.removedFriendKeys ?? []),
-      ...(cs.removedFriendKeys ?? []),
-    ]);
-    store.removedFriendKeys = [...removedFriends];
+    if (cs.removedFriends && typeof cs.removedFriends === "object") {
+      for (const [k, v] of Object.entries(cs.removedFriends)) {
+        const cur = store.removedFriends[k];
+        if (!cur || v > cur) store.removedFriends[k] = v;
+      }
+    }
 
     if (Array.isArray(cs.accounts)) {
       const byId = new Map(store.accounts.map((a) => [a.id, a]));
@@ -170,7 +125,9 @@ export async function POST(req: Request) {
         if (
           deleted.has(m.user_id) ||
           deletedMoments.has(m.id) ||
-          m.media_path.startsWith("blob:")
+          !m.media_path ||
+          m.media_path.startsWith("blob:") ||
+          m.media_path.startsWith("data:video/")
         ) {
           continue;
         }
@@ -180,21 +137,19 @@ export async function POST(req: Request) {
             ...existing,
             ...m,
             media_path:
-              m.media_path && m.media_path !== "__SERVER_CACHED__"
-                ? m.media_path
-                : existing.media_path,
+              m.media_path !== MEDIA_PLACEHOLDER ? m.media_path : existing.media_path,
             reactions:
               (m.reactions?.length ?? 0) >= (existing.reactions?.length ?? 0)
                 ? m.reactions
                 : existing.reactions,
           });
-        } else if (m.media_path && m.media_path !== "__SERVER_CACHED__") {
+        } else if (m.media_path !== MEDIA_PLACEHOLDER) {
           byId.set(m.id, m);
         }
       }
       store.moments = [...byId.values()]
         .sort((a, b) => b.created_at.localeCompare(a.created_at))
-        .slice(0, 60);
+        .slice(0, 120);
     }
 
     if (Array.isArray(cs.friendships)) {
@@ -204,7 +159,7 @@ export async function POST(req: Request) {
         if (
           !deleted.has(f.user_id) &&
           !deleted.has(f.friend_id) &&
-          !removedFriends.has(friendPairKey(f.user_id, f.friend_id))
+          isFriendshipActive(f, store.removedFriends)
         ) {
           byKey.set(key(f), f);
         }
@@ -227,7 +182,7 @@ export async function POST(req: Request) {
     typeof p.friendId === "string"
   ) {
     const pair = friendPairKey(p.userId, p.friendId);
-    store.removedFriendKeys = (store.removedFriendKeys ?? []).filter((k) => k !== pair);
+    delete store.removedFriends[pair];
     const nowIso = new Date().toISOString();
     const has1 = store.friendships.some(
       (f) => f.user_id === p.userId && f.friend_id === p.friendId,
@@ -249,10 +204,7 @@ export async function POST(req: Request) {
     typeof p.friendId === "string"
   ) {
     const pair = friendPairKey(p.userId, p.friendId);
-    if (!store.removedFriendKeys) store.removedFriendKeys = [];
-    if (!store.removedFriendKeys.includes(pair)) {
-      store.removedFriendKeys.push(pair);
-    }
+    store.removedFriends[pair] = new Date().toISOString();
     store.friendships = store.friendships.filter(
       (f) => friendPairKey(f.user_id, f.friend_id) !== pair,
     );
@@ -260,16 +212,20 @@ export async function POST(req: Request) {
 
   if (body.action === "create_moment" && p.moment && typeof p.moment === "object") {
     const incoming = p.moment as Moment;
-    if (incoming.id && incoming.media_path && !incoming.media_path.startsWith("blob:")) {
+    if (
+      incoming.id &&
+      incoming.media_path &&
+      !incoming.media_path.startsWith("blob:") &&
+      !incoming.media_path.startsWith("data:video/")
+    ) {
       store.moments = [
         incoming,
         ...store.moments.filter((m) => m.id !== incoming.id),
-      ].slice(0, 60);
+      ].slice(0, 120);
     }
   }
 
   if (body.action === "delete_moment" && typeof p.momentId === "string") {
-    if (!store.deletedMomentIds) store.deletedMomentIds = [];
     if (!store.deletedMomentIds.includes(p.momentId)) {
       store.deletedMomentIds.push(p.momentId);
     }

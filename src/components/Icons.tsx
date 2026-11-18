@@ -107,20 +107,6 @@ export const IconDownload = (p: IconProps) => (
   </svg>
 );
 
-export const IconVolumeOff = (p: IconProps) => (
-  <svg {...base(p)}>
-    <path d="M11 5 6 9H2v6h4l5 4V5z" />
-    <path d="m23 9-6 6M17 9l6 6" />
-  </svg>
-);
-
-export const IconVolumeOn = (p: IconProps) => (
-  <svg {...base(p)}>
-    <path d="M11 5 6 9H2v6h4l5 4V5z" />
-    <path d="M15.5 8.5a5 5 0 0 1 0 7M19 5a10 10 0 0 1 0 14" />
-  </svg>
-);
-
 export const IconCopy = (p: IconProps) => (
   <svg {...base(p)}>
     <rect x="9" y="9" width="12" height="12" rx="2" />
@@ -138,12 +124,6 @@ export const IconShare = (p: IconProps) => (
 export const IconTrash = (p: IconProps) => (
   <svg {...base(p)}>
     <path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14" />
-  </svg>
-);
-
-export const IconPlay = (p: IconProps) => (
-  <svg {...base({ ...p, fill: "currentColor", stroke: "none" })}>
-    <path d="M8 5v14l11-7z" />
   </svg>
 );
 

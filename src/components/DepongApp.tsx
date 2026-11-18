@@ -215,7 +215,7 @@ export default function DepongApp() {
     };
   }, [userId, reloadAll]);
 
-  // ---------- Sinkronisasi berkala ringan agar video/foto dari teman langsung muncul ----------
+  // ---------- Sinkronisasi berkala ringan agar foto dari sahabat langsung muncul ----------
   useEffect(() => {
     if (!userId) return;
     const timer = window.setInterval(() => {

@@ -1,14 +1,19 @@
-import type { StoredAccount, StoreShape } from "@/app/api/store/route";
-import { createDemoAdminUsers, createInitialDemoMoments } from "./demoData";
+import {
+  coerceStore,
+  emptyStore,
+  friendIdsOf,
+  MEDIA_PLACEHOLDER,
+  type StoredAccount,
+  type StoreShape,
+} from "./storeTypes";
 import type {
   AdminUserSummary,
-  MediaType,
   Moment,
   Profile,
   PublicProfile,
 } from "./types";
 
-const STORAGE_KEY = "depong_integrated_store_v1";
+const STORAGE_KEY = "depong_photo_store_v2";
 const SESSION_KEY = "depong_active_user_id_v1";
 const SUPER_ADMIN_KEY = "depong_super_admin_session_v1";
 const CHANNEL_NAME = "depong_live_channel_v1";
@@ -40,53 +45,23 @@ export function verifySuperAdminCredentials(email: string, password: string): bo
   );
 }
 
-function createInitialLocalStore(): StoreShape {
-  const seedUsers = createDemoAdminUsers(Date.now());
-  const seedMoments = createInitialDemoMoments(Date.now());
-  const nowIso = new Date().toISOString();
-
-  const friendships: { user_id: string; friend_id: string; created_at: string }[] = [];
-  const mainId = seedUsers[0]?.id ?? "demo-user-daffa";
-  for (const u of seedUsers.slice(1, 5)) {
-    friendships.push({ user_id: mainId, friend_id: u.id, created_at: nowIso });
-    friendships.push({ user_id: u.id, friend_id: mainId, created_at: nowIso });
-  }
-
-  return {
-    accounts: seedUsers,
-    friendships,
-    moments: seedMoments,
-    replies: [],
-    deletedIds: [],
-    updatedAt: Date.now(),
-  };
-}
-
 export function loadLocalStore(): StoreShape {
-  if (typeof window === "undefined") return createInitialLocalStore();
+  if (typeof window === "undefined") return emptyStore();
   if (memoryStore) return memoryStore;
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY);
     if (raw) {
-      const parsed = JSON.parse(raw) as Partial<StoreShape>;
-      if (Array.isArray(parsed.accounts) && Array.isArray(parsed.moments)) {
-        memoryStore = {
-          accounts: parsed.accounts,
-          friendships: parsed.friendships ?? [],
-          moments: parsed.moments.filter((m) => !m.media_path.startsWith("blob:")),
-          replies: parsed.replies ?? [],
-          deletedIds: parsed.deletedIds ?? [],
-          deletedMomentIds: parsed.deletedMomentIds ?? [],
-          removedFriendKeys: parsed.removedFriendKeys ?? [],
-          updatedAt: parsed.updatedAt ?? Date.now(),
-        };
+      const parsed = coerceStore(JSON.parse(raw));
+      if (parsed) {
+        parsed.moments = parsed.moments.filter((m) => !m.media_path.startsWith("data:video/"));
+        memoryStore = parsed;
         return memoryStore;
       }
     }
   } catch {
     // Fallback
   }
-  const init = createInitialLocalStore();
+  const init = emptyStore();
   memoryStore = init;
   saveLocalStore(init, false);
   return init;
@@ -96,17 +71,14 @@ export function saveLocalStore(store: StoreShape, broadcast = true): void {
   memoryStore = store;
   if (typeof window === "undefined") return;
 
-  // Untuk penyimpanan lokal browser user, bersihkan foto/video dari orang yang bukan sahabat aktif
   const activeUid = window.localStorage.getItem(SESSION_KEY);
   let forLocalStorage = store;
   if (activeUid) {
-    const activeFriendIds = new Set(
-      store.friendships.filter((f) => f.user_id === activeUid).map((f) => f.friend_id),
-    );
+    const activeFriends = friendIdsOf(store, activeUid);
     forLocalStorage = {
       ...store,
       moments: store.moments.filter(
-        (m) => m.user_id === activeUid || activeFriendIds.has(m.user_id),
+        (m) => m.user_id === activeUid || activeFriends.has(m.user_id),
       ),
     };
   }
@@ -117,21 +89,14 @@ export function saveLocalStore(store: StoreShape, broadcast = true): void {
     try {
       const trimmed: StoreShape = {
         ...forLocalStorage,
-        moments: forLocalStorage.moments.slice(0, 4),
+        moments: forLocalStorage.moments.slice(0, 12),
       };
       window.localStorage.setItem(STORAGE_KEY, JSON.stringify(trimmed));
     } catch {
-      try {
-        const accountsOnly: StoreShape = {
-          ...forLocalStorage,
-          moments: [],
-        };
-        window.localStorage.setItem(STORAGE_KEY, JSON.stringify(accountsOnly));
-      } catch {
-        // Abaikan
-      }
+      // Abaikan bila storage penuh
     }
   }
+
   if (broadcast && typeof BroadcastChannel !== "undefined") {
     try {
       const bc = new BroadcastChannel(CHANNEL_NAME);
@@ -173,14 +138,13 @@ export async function syncWithServerStore(
 ): Promise<StoreShape> {
   const local = loadLocalStore();
   try {
-    // Agar request ringan & cepat, momen yang sudah pernah ter-upload ke server tidak perlu dikirim ulang base64-nya
     const lightClientStore: Partial<StoreShape> = {
       ...local,
       moments: local.moments
-        .filter((m) => !m.media_path.startsWith("blob:"))
+        .filter((m) => !m.media_path.startsWith("blob:") && !m.media_path.startsWith("data:video/"))
         .map((m) =>
           serverSyncedMomentIds.has(m.id) && m.media_path.length > 2048
-            ? { ...m, media_path: "__SERVER_CACHED__" }
+            ? { ...m, media_path: MEDIA_PLACEHOLDER }
             : m,
         ),
     };
@@ -195,14 +159,16 @@ export async function syncWithServerStore(
       }),
     });
     if (res.ok) {
-      const remote = (await res.json()) as StoreShape;
-      for (const m of remote.moments) {
-        if (m.media_path && m.media_path !== "__SERVER_CACHED__") {
-          serverSyncedMomentIds.add(m.id);
+      const remote = coerceStore(await res.json());
+      if (remote) {
+        for (const m of remote.moments) {
+          if (m.media_path && m.media_path !== MEDIA_PLACEHOLDER) {
+            serverSyncedMomentIds.add(m.id);
+          }
         }
+        saveLocalStore(remote, false);
+        return remote;
       }
-      saveLocalStore(remote, false);
-      return remote;
     }
   } catch {
     // Jika offline, gunakan local store
@@ -295,7 +261,6 @@ export async function registerLocalAccount(input: {
     invite_code: inviteCode,
     created_at: nowIso,
     moments_count: 0,
-    videos_count: 0,
     friends_count: 0,
     last_active_at: nowIso,
     password: input.password,
@@ -331,9 +296,9 @@ export async function loginLocalAccount(input: {
 
   found.last_active_at = new Date().toISOString();
   store.updatedAt = Date.now();
+  setActiveSessionUserId(found.id);
   saveLocalStore(store, true);
   await syncWithServerStore("login_user");
-  setActiveSessionUserId(found.id);
   return toProfile(found);
 }
 
@@ -342,9 +307,9 @@ export function blobToDataUrl(blob: Blob): Promise<string> {
     const reader = new FileReader();
     reader.onloadend = () => {
       if (typeof reader.result === "string") resolve(reader.result);
-      else reject(new Error("Gagal membaca file media"));
+      else reject(new Error("Gagal membaca file foto"));
     };
-    reader.onerror = () => reject(new Error("Gagal membaca file media"));
+    reader.onerror = () => reject(new Error("Gagal membaca file foto"));
     reader.readAsDataURL(blob);
   });
 }
@@ -352,13 +317,10 @@ export function blobToDataUrl(blob: Blob): Promise<string> {
 export async function createLocalMomentRecord(input: {
   userId: string;
   blob: Blob;
-  mediaType: MediaType;
-  duration: number | null;
   caption: string;
 }): Promise<Moment> {
   const store = loadLocalStore();
   const author = store.accounts.find((a) => a.id === input.userId);
-  // Selalu konversi ke dataURL (bukan blob: lokal) agar pengguna lain di perangkat berbeda bisa melihat video/foto
   const mediaPath = await blobToDataUrl(input.blob);
 
   const nowIso = new Date().toISOString();
@@ -366,8 +328,6 @@ export async function createLocalMomentRecord(input: {
     id: `mom-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
     user_id: input.userId,
     media_path: mediaPath,
-    media_type: input.mediaType,
-    duration: input.duration,
     caption: input.caption.trim() || null,
     created_at: nowIso,
     profile: author ? toPublicProfile(author) : null,
@@ -377,9 +337,6 @@ export async function createLocalMomentRecord(input: {
   store.moments.unshift(moment);
   if (author) {
     author.moments_count = (author.moments_count ?? 0) + 1;
-    if (input.mediaType === "video") {
-      author.videos_count = (author.videos_count ?? 0) + 1;
-    }
     author.last_active_at = nowIso;
   }
   store.updatedAt = Date.now();

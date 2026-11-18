@@ -26,7 +26,6 @@ export default function MemoriesView({
   const mine = useMemo(() => moments.filter((m) => m.user_id === userId), [moments, userId]);
   const scoped = scope === "mine" ? mine : moments;
 
-  // Momen terbaru per tanggal (moments sudah urut terbaru → terlama)
   const byDay = useMemo(() => {
     const map = new Map<string, Moment>();
     for (const m of scoped) {
@@ -37,14 +36,15 @@ export default function MemoriesView({
   }, [scoped]);
 
   const streak = useMemo(() => computeStreak(mine.map((m) => m.created_at)), [mine]);
-  const videoCount = useMemo(() => mine.filter((m) => m.media_type === "video").length, [mine]);
 
   const cells = useMemo(() => {
     const first = new Date(month);
-    const offset = (first.getDay() + 6) % 7; // Senin = 0
+    const offset = (first.getDay() + 6) % 7;
     const daysInMonth = new Date(month.getFullYear(), month.getMonth() + 1, 0).getDate();
     const out: (Date | null)[] = Array.from({ length: offset }, () => null);
-    for (let d = 1; d <= daysInMonth; d++) out.push(new Date(month.getFullYear(), month.getMonth(), d));
+    for (let d = 1; d <= daysInMonth; d++) {
+      out.push(new Date(month.getFullYear(), month.getMonth(), d));
+    }
     return out;
   }, [month]);
 
@@ -63,23 +63,27 @@ export default function MemoriesView({
         <div className="inline-flex rounded-full bg-panel p-1 text-xs font-bold">
           <button
             onClick={() => setScope("mine")}
-            className={`rounded-full px-3 py-1 ${scope === "mine" ? "bg-gold text-black" : "text-muted"}`}
+            className={`rounded-full px-3 py-1 ${
+              scope === "mine" ? "bg-gold text-black" : "text-muted"
+            }`}
           >
             Punyaku
           </button>
           <button
             onClick={() => setScope("all")}
-            className={`rounded-full px-3 py-1 ${scope === "all" ? "bg-gold text-black" : "text-muted"}`}
+            className={`rounded-full px-3 py-1 ${
+              scope === "all" ? "bg-gold text-black" : "text-muted"
+            }`}
           >
             Semua
           </button>
         </div>
       </div>
 
-      {/* Kolase terbaru */}
+      {/* Kolase foto terbaru */}
       <div className="rounded-[28px] border border-white/10 bg-panel p-2.5">
         {scoped.length === 0 ? (
-          <p className="py-8 text-center text-sm text-muted">Belum ada momen di sini.</p>
+          <p className="py-8 text-center text-sm text-muted">Belum ada foto di sini.</p>
         ) : (
           <div className="grid grid-cols-6 gap-1.5">
             {scoped.slice(0, 24).map((m) => (
@@ -161,9 +165,7 @@ export default function MemoriesView({
       {/* Statistik */}
       <div className="mt-4 flex justify-center">
         <div className="flex items-center gap-3 rounded-full border border-white/10 bg-panel-2 px-4 py-2 text-xs font-semibold">
-          <span>💛 {mine.length} momen</span>
-          <span className="opacity-30">•</span>
-          <span>🎥 {videoCount} video</span>
+          <span>💛 {mine.length} foto</span>
           <span className="opacity-30">•</span>
           <span>🔥 {streak} hari streak</span>
         </div>

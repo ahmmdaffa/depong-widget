@@ -7,11 +7,10 @@ import {
   toProfile,
   toPublicProfile,
 } from "./backendStore";
-import { baseMime, extFromMime } from "./media";
+import { friendIdsOf, friendPairKey } from "./storeTypes";
 import { getSupabase, isSupabaseConfigured, MEDIA_BUCKET } from "./supabase";
 import type {
   AdminUserSummary,
-  MediaType,
   Moment,
   Profile,
   PublicProfile,
@@ -69,9 +68,7 @@ export async function updateDisplayName(userId: string, displayName: string) {
 export async function fetchFriends(userId: string): Promise<PublicProfile[]> {
   if (!isSupabaseConfigured) {
     const store = loadLocalStore();
-    const friendIds = new Set(
-      store.friendships.filter((f) => f.user_id === userId).map((f) => f.friend_id),
-    );
+    const friendIds = friendIdsOf(store, userId);
     return store.accounts.filter((a) => friendIds.has(a.id)).map(toPublicProfile);
   }
   const { data, error } = await getSupabase()
@@ -85,10 +82,6 @@ export async function fetchFriends(userId: string): Promise<PublicProfile[]> {
     .filter((f): f is PublicProfile => Boolean(f));
 }
 
-function friendPairKey(u1: string, u2: string): string {
-  return u1 < u2 ? `${u1}:${u2}` : `${u2}:${u1}`;
-}
-
 export async function addFriendByCode(code: string, currentUserId?: string): Promise<PublicProfile> {
   if (!isSupabaseConfigured) {
     const store = await syncWithServerStore();
@@ -99,13 +92,13 @@ export async function addFriendByCode(code: string, currentUserId?: string): Pro
     if (!target) {
       throw new Error("Kode undangan tidak ditemukan");
     }
-    const uid = currentUserId ?? store.accounts[0]?.id;
+    const uid = currentUserId;
     if (!uid) throw new Error("Silakan masuk terlebih dahulu");
     if (target.id === uid) {
       throw new Error("Itu kode undangan kamu sendiri");
     }
     const pair = friendPairKey(uid, target.id);
-    store.removedFriendKeys = (store.removedFriendKeys ?? []).filter((k) => k !== pair);
+    delete store.removedFriends[pair];
 
     const exists = store.friendships.some(
       (f) => f.user_id === uid && f.friend_id === target.id,
@@ -114,9 +107,6 @@ export async function addFriendByCode(code: string, currentUserId?: string): Pro
       const nowIso = new Date().toISOString();
       store.friendships.push({ user_id: uid, friend_id: target.id, created_at: nowIso });
       store.friendships.push({ user_id: target.id, friend_id: uid, created_at: nowIso });
-      const me = store.accounts.find((a) => a.id === uid);
-      if (me) me.friends_count = (me.friends_count ?? 0) + 1;
-      target.friends_count = (target.friends_count ?? 0) + 1;
       store.updatedAt = Date.now();
       saveLocalStore(store, true);
       await syncWithServerStore("add_friend", { userId: uid, friendId: target.id });
@@ -134,15 +124,11 @@ export async function removeFriend(friendId: string, currentUserId?: string) {
     const uid = currentUserId;
     if (uid) {
       const pair = friendPairKey(uid, friendId);
-      if (!store.removedFriendKeys) store.removedFriendKeys = [];
-      if (!store.removedFriendKeys.includes(pair)) {
-        store.removedFriendKeys.push(pair);
-      }
+      store.removedFriends[pair] = new Date().toISOString();
       store.friendships = store.friendships.filter(
         (f) => friendPairKey(f.user_id, f.friend_id) !== pair,
       );
       store.updatedAt = Date.now();
-      // saveLocalStore otomatis menghapus foto/video milik teman yang dihapus dari penyimpanan lokal user
       saveLocalStore(store, true);
       await syncWithServerStore("remove_friend", { userId: uid, friendId });
     }
@@ -152,27 +138,17 @@ export async function removeFriend(friendId: string, currentUserId?: string) {
   if (error) throw error;
 }
 
-/** Ambil momen milik sendiri + sahabat yang sudah saling invite pertemanan saja. */
+/** Ambil foto milik sendiri + sahabat yang sudah saling invite pertemanan saja. */
 export async function fetchMoments(currentUserId?: string): Promise<Moment[]> {
   if (!isSupabaseConfigured) {
     const store = await syncWithServerStore();
+    if (!currentUserId) return [];
     const accMap = new Map(store.accounts.map((a) => [a.id, toPublicProfile(a)]));
-
-    if (!currentUserId) {
-      return [];
-    }
-
-    const activeFriendIds = new Set(
-      store.friendships
-        .filter((f) => f.user_id === currentUserId)
-        .map((f) => f.friend_id),
-    );
-
-    // Simpan kembali ke localStorage agar momen dari non-teman / mantan teman terhapus dari penyimpanan lokal
+    const activeFriends = friendIdsOf(store, currentUserId);
     saveLocalStore(store, false);
 
     return store.moments
-      .filter((m) => m.user_id === currentUserId || activeFriendIds.has(m.user_id))
+      .filter((m) => m.user_id === currentUserId || activeFriends.has(m.user_id))
       .map((m) => ({
         ...m,
         profile: m.profile ?? accMap.get(m.user_id) ?? null,
@@ -181,12 +157,12 @@ export async function fetchMoments(currentUserId?: string): Promise<Moment[]> {
   const { data, error } = await getSupabase()
     .from("moments")
     .select(
-      `id,user_id,media_path,media_type,duration,caption,created_at,
+      `id,user_id,media_path,caption,created_at,
        profile:profiles(${PROFILE_FIELDS}),
        reactions(id,user_id,emoji,created_at)`,
     )
     .order("created_at", { ascending: false })
-    .limit(300);
+    .limit(200);
   if (error) throw error;
   return (data ?? []) as unknown as Moment[];
 }
@@ -194,9 +170,6 @@ export async function fetchMoments(currentUserId?: string): Promise<Moment[]> {
 export async function uploadMoment(input: {
   userId: string;
   blob: Blob;
-  mime: string;
-  mediaType: MediaType;
-  duration: number | null;
   caption: string;
 }) {
   if (!isSupabaseConfigured) {
@@ -204,19 +177,17 @@ export async function uploadMoment(input: {
     return;
   }
   const supabase = getSupabase();
-  const contentType = baseMime(input.mime || input.blob.type || "image/jpeg");
-  const path = `${input.userId}/${crypto.randomUUID()}.${extFromMime(contentType)}`;
+  const path = `${input.userId}/${crypto.randomUUID()}.jpg`;
 
   const { error: uploadError } = await supabase.storage
     .from(MEDIA_BUCKET)
-    .upload(path, input.blob, { contentType, cacheControl: "31536000", upsert: false });
+    .upload(path, input.blob, { contentType: "image/jpeg", cacheControl: "31536000", upsert: false });
   if (uploadError) throw uploadError;
 
   const { error } = await supabase.from("moments").insert({
     user_id: input.userId,
     media_path: path,
-    media_type: input.mediaType,
-    duration: input.duration,
+    media_type: "photo",
     caption: input.caption.trim() || null,
   });
   if (error) {
@@ -228,6 +199,9 @@ export async function uploadMoment(input: {
 export async function deleteMoment(moment: Pick<Moment, "id" | "media_path">) {
   if (!isSupabaseConfigured) {
     const store = loadLocalStore();
+    if (!store.deletedMomentIds.includes(moment.id)) {
+      store.deletedMomentIds.push(moment.id);
+    }
     store.moments = store.moments.filter((m) => m.id !== moment.id);
     store.updatedAt = Date.now();
     saveLocalStore(store, true);
@@ -301,7 +275,7 @@ export async function fetchReplies(momentId: string): Promise<Reply[]> {
   return (data ?? []) as unknown as Reply[];
 }
 
-/** Ambil daftar seluruh user yang membuat akun untuk halaman Admin. */
+/** Ambil daftar seluruh user yang membuat akun untuk halaman Super Admin. */
 export async function fetchAdminUsers(): Promise<AdminUserSummary[]> {
   if (!isSupabaseConfigured) {
     const store = await syncWithServerStore();
@@ -320,7 +294,6 @@ export async function fetchAdminUsers(): Promise<AdminUserSummary[]> {
       invite_code: String(row.invite_code),
       created_at: String(row.created_at),
       moments_count: Number(row.moments_count ?? 0),
-      videos_count: Number(row.videos_count ?? 0),
       friends_count: Number(row.friends_count ?? 0),
       last_active_at: String(row.last_active_at ?? row.created_at),
     }));
@@ -341,13 +314,36 @@ export async function fetchAdminUsers(): Promise<AdminUserSummary[]> {
     invite_code: p.invite_code,
     created_at: p.created_at,
     moments_count: 0,
-    videos_count: 0,
     friends_count: 0,
     last_active_at: p.created_at,
   }));
 }
 
-/** Hapus akun pengguna dari Dashboard Admin. */
+/** Ambil seluruh foto yang diunggah semua pengguna untuk Galeri Super Admin. */
+export async function fetchAdminMoments(): Promise<Moment[]> {
+  if (!isSupabaseConfigured) {
+    const store = await syncWithServerStore();
+    const accMap = new Map(store.accounts.map((a) => [a.id, toPublicProfile(a)]));
+    return store.moments.map((m) => ({
+      ...m,
+      profile: m.profile ?? accMap.get(m.user_id) ?? null,
+    }));
+  }
+
+  const { data, error } = await getSupabase()
+    .from("moments")
+    .select(
+      `id,user_id,media_path,caption,created_at,
+       profile:profiles(${PROFILE_FIELDS}),
+       reactions(id,user_id,emoji,created_at)`,
+    )
+    .order("created_at", { ascending: false })
+    .limit(300);
+  if (error) throw error;
+  return (data ?? []) as unknown as Moment[];
+}
+
+/** Hapus akun pengguna dari Dashboard Super Admin. */
 export async function deleteAdminUser(userId: string): Promise<void> {
   if (!isSupabaseConfigured) {
     await deleteLocalAccount(userId);

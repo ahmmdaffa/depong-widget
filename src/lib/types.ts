@@ -1,5 +1,3 @@
-export type MediaType = "photo" | "video";
-
 export interface PublicProfile {
   id: string;
   username: string;
@@ -22,7 +20,6 @@ export interface AdminUserSummary {
   invite_code: string;
   created_at: string;
   moments_count: number;
-  videos_count: number;
   friends_count: number;
   last_active_at: string;
 }
@@ -35,12 +32,11 @@ export interface Reaction {
   created_at: string;
 }
 
+/** Satu momen = satu foto (gabungan kamera belakang + depan). */
 export interface Moment {
   id: string;
   user_id: string;
   media_path: string;
-  media_type: MediaType;
-  duration: number | null;
   caption: string | null;
   created_at: string;
   profile: PublicProfile | null;

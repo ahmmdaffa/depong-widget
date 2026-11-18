@@ -4,7 +4,7 @@ export default function manifest(): MetadataRoute.Manifest {
   return {
     name: "Depong",
     short_name: "Depong",
-    description: "Kirim foto & video 7 detik ke sahabat terdekatmu.",
+    description: "Kirim foto momen ke sahabat terdekatmu.",
     start_url: "/",
     scope: "/",
     display: "standalone",
