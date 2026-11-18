@@ -285,6 +285,23 @@ as $$
   order by p.created_at desc;
 $$;
 
+-- Hapus akun pengguna beserta seluruh file medianya dari Dashboard Admin
+create or replace function public.admin_delete_user(target_user_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  delete from storage.objects
+  where bucket_id = 'moments'
+    and (storage.foldername(name))[1] = target_user_id::text;
+
+  delete from public.profiles where id = target_user_id;
+  delete from auth.users where id = target_user_id;
+end;
+$$;
+
 -- ---------- STORAGE (bucket media foto & video) ----------
 insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
 values (

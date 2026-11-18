@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { errorMessage, fetchAdminUsers } from "@/lib/api";
+import { deleteAdminUser, errorMessage, fetchAdminUsers } from "@/lib/api";
 import { createDemoAdminUsers } from "@/lib/demoData";
 import { clockTime, dayKey, timeAgo } from "@/lib/format";
 import { getSupabase, isSupabaseConfigured } from "@/lib/supabase";
@@ -13,6 +13,7 @@ import {
   IconChevronLeft,
   IconCopy,
   IconDownload,
+  IconTrash,
   IconUsers,
   IconX,
 } from "./Icons";
@@ -38,6 +39,8 @@ export default function AdminDashboard() {
   const [period, setPeriod] = useState<FilterPeriod>("all");
   const [sortBy, setSortBy] = useState<SortBy>("newest");
   const [selectedUser, setSelectedUser] = useState<AdminUserSummary | null>(null);
+  const [confirmDeleteUser, setConfirmDeleteUser] = useState<AdminUserSummary | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [nowMs, setNowMs] = useState(() => Date.now());
 
@@ -224,6 +227,25 @@ export default function AdminDashboard() {
     };
     setUsers((prev) => [newUser, ...prev]);
     notify(`Akun baru terdaftar: ${pick} (@${slug}) 💛`);
+  }
+
+  async function handleConfirmDelete() {
+    if (!confirmDeleteUser || deletingId) return;
+    const target = confirmDeleteUser;
+    setDeletingId(target.id);
+    try {
+      if (source === "supabase" && isSupabaseConfigured) {
+        await deleteAdminUser(target.id);
+      }
+      setUsers((prev) => prev.filter((u) => u.id !== target.id));
+      if (selectedUser?.id === target.id) setSelectedUser(null);
+      setConfirmDeleteUser(null);
+      notify(`Akun ${target.display_name} (@${target.username}) berhasil dihapus`);
+    } catch (err) {
+      notify(errorMessage(err));
+    } finally {
+      setDeletingId(null);
+    }
   }
 
   // ---------- Layar Kunci PIN Opsional ----------
@@ -547,7 +569,8 @@ export default function AdminDashboard() {
                     <th className="px-4 py-3 text-center">Momen (Video 7s)</th>
                     <th className="px-4 py-3 text-center">Sahabat</th>
                     <th className="px-4 py-3">Terakhir Aktif</th>
-                    <th className="py-3 pr-2 pl-4 text-right">Waktu Buat Akun</th>
+                    <th className="px-4 py-3 text-right">Waktu Buat Akun</th>
+                    <th className="py-3 pr-2 pl-4 text-right">Aksi</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-white/5">
@@ -604,7 +627,7 @@ export default function AdminDashboard() {
                         {timeAgo(u.last_active_at)}
                       </td>
 
-                      <td className="py-3.5 pr-2 pl-4 text-right">
+                      <td className="px-4 py-3.5 text-right">
                         <div className="text-xs font-semibold text-white">
                           {new Date(u.created_at).toLocaleDateString("id-ID", {
                             day: "numeric",
@@ -615,6 +638,21 @@ export default function AdminDashboard() {
                         <div className="text-[11px] text-muted">
                           {clockTime(u.created_at)} · {timeAgo(u.created_at)}
                         </div>
+                      </td>
+
+                      <td className="py-3.5 pr-2 pl-4 text-right">
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setConfirmDeleteUser(u);
+                          }}
+                          className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-red-500/25 bg-red-500/10 text-red-400 transition hover:bg-red-500 hover:text-white"
+                          title={`Hapus akun ${u.display_name}`}
+                          aria-label={`Hapus akun ${u.display_name}`}
+                        >
+                          <IconTrash size={15} />
+                        </button>
                       </td>
                     </tr>
                   ))}
@@ -713,13 +751,59 @@ export default function AdminDashboard() {
                 }}
                 className="flex-1 rounded-full bg-gold py-2.5 text-xs font-extrabold text-black"
               >
-                Salin Link Undangan User
+                Salin Link Undangan
               </button>
               <button
-                onClick={() => setSelectedUser(null)}
-                className="rounded-full bg-panel-2 px-5 py-2.5 text-xs font-bold text-white"
+                onClick={() => setConfirmDeleteUser(selectedUser)}
+                className="flex items-center gap-1.5 rounded-full border border-red-500/30 bg-red-500/15 px-4 py-2.5 text-xs font-bold text-red-400 transition hover:bg-red-500 hover:text-white"
               >
-                Tutup
+                <IconTrash size={14} />
+                <span>Hapus Akun</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Konfirmasi Hapus Akun */}
+      {confirmDeleteUser && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm"
+          onClick={() => !deletingId && setConfirmDeleteUser(null)}
+        >
+          <div
+            className="animate-sheet-up w-full max-w-sm rounded-[32px] border border-red-500/30 bg-panel p-6 text-center space-y-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-red-500/15 text-red-400">
+              <IconTrash size={24} />
+            </div>
+            <div>
+              <h3 className="text-base font-extrabold text-white">
+                Hapus Akun {confirmDeleteUser.display_name}?
+              </h3>
+              <p className="mt-1 text-xs text-muted">
+                Akun <span className="font-mono text-white">@{confirmDeleteUser.username}</span>{" "}
+                beserta {confirmDeleteUser.moments_count} momen foto/video 7s miliknya akan dihapus
+                secara permanen.
+              </p>
+            </div>
+            <div className="flex gap-2.5 pt-1">
+              <button
+                type="button"
+                disabled={Boolean(deletingId)}
+                onClick={() => setConfirmDeleteUser(null)}
+                className="flex-1 rounded-full bg-panel-2 py-2.5 text-xs font-bold text-white"
+              >
+                Batal
+              </button>
+              <button
+                type="button"
+                disabled={Boolean(deletingId)}
+                onClick={() => void handleConfirmDelete()}
+                className="flex-1 rounded-full bg-red-500 py-2.5 text-xs font-extrabold text-white transition hover:bg-red-600 disabled:opacity-50"
+              >
+                {deletingId ? "Menghapus…" : "Ya, Hapus"}
               </button>
             </div>
           </div>

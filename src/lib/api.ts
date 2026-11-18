@@ -182,3 +182,14 @@ export async function fetchAdminUsers(): Promise<AdminUserSummary[]> {
     last_active_at: p.created_at,
   }));
 }
+
+/** Hapus akun pengguna dari Dashboard Admin. */
+export async function deleteAdminUser(userId: string): Promise<void> {
+  const supabase = getSupabase();
+  const rpcRes = await supabase.rpc("admin_delete_user", { target_user_id: userId });
+  if (!rpcRes.error) return;
+
+  // Fallback jika fungsi RPC admin_delete_user belum dijalankan di SQL Editor
+  const { error } = await supabase.from("profiles").delete().eq("id", userId);
+  if (error) throw error;
+}
