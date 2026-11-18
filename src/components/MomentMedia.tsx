@@ -43,7 +43,7 @@ export function MomentMedia({
     <video
       ref={videoRef}
       src={url}
-      className="h-full w-full object-cover"
+      className="h-full w-full -scale-x-100 object-cover"
       playsInline
       loop
       muted={muted}
@@ -72,7 +72,7 @@ export function MomentThumb({ moment, className = "" }: { moment: Moment; classN
       ) : (
         <video
           src={`${url}#t=0.1`}
-          className="pointer-events-none h-full w-full object-cover"
+          className="pointer-events-none h-full w-full -scale-x-100 object-cover"
           muted
           playsInline
           preload="metadata"

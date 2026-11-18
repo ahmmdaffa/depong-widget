@@ -313,7 +313,7 @@ export default function CameraView({
     if (
       videoEl.videoWidth > 0 &&
       typeof HTMLCanvasElement.prototype.captureStream === "function" &&
-      (chosenFilter.id !== "normal" || facing === "user")
+      chosenFilter.id !== "normal"
     ) {
       const vw = videoEl.videoWidth;
       const vh = videoEl.videoHeight;
@@ -330,16 +330,11 @@ export default function CameraView({
       if (ctx) {
         ctx.imageSmoothingEnabled = true;
         ctx.imageSmoothingQuality = "high";
-        const mirror = facing === "user";
 
         const renderFrame = () => {
           ctx.save();
           if (chosenFilter.css !== "none") {
             ctx.filter = chosenFilter.css;
-          }
-          if (mirror) {
-            ctx.translate(outSide, 0);
-            ctx.scale(-1, 1);
           }
           ctx.drawImage(videoEl, sx, sy, side, side, 0, 0, outSide, outSide);
           ctx.restore();
@@ -535,16 +530,21 @@ export default function CameraView({
   const shouldApplyPreviewFilter =
     !captured || captured.bakedFilterId !== activeFilter.id;
 
-  const mediaFilterStyle =
-    shouldApplyPreviewFilter && activeFilter.css !== "none"
-      ? {
-          filter: activeFilter.css,
-          WebkitFilter: activeFilter.css,
-          transform: !captured && facing === "user" ? "scaleX(-1) translateZ(0)" : "translateZ(0)",
-        }
-      : {
-          transform: !captured && facing === "user" ? "scaleX(-1) translateZ(0)" : "translateZ(0)",
-        };
+  const isVideoMirror = facing === "user" && (!captured || captured.type === "video");
+  const filterCssValue =
+    shouldApplyPreviewFilter && activeFilter.css !== "none" ? activeFilter.css : undefined;
+
+  const videoFilterStyle: React.CSSProperties = {
+    filter: filterCssValue,
+    WebkitFilter: filterCssValue,
+    transform: isVideoMirror ? "scaleX(-1) translateZ(0)" : "translateZ(0)",
+  };
+
+  const photoFilterStyle: React.CSSProperties = {
+    filter: filterCssValue,
+    WebkitFilter: filterCssValue,
+    transform: "translateZ(0)",
+  };
 
   return (
     <div className="flex h-full flex-col items-center justify-between gap-4 px-4 pt-2 pb-28">
@@ -560,7 +560,7 @@ export default function CameraView({
       >
         <video
           ref={videoRef}
-          style={mediaFilterStyle}
+          style={videoFilterStyle}
           className={`h-full w-full object-cover transition-[filter] duration-200 ${
             captured ? "invisible" : ""
           }`}
@@ -575,13 +575,13 @@ export default function CameraView({
             <img
               src={captured.url}
               alt="Pratinjau"
-              style={mediaFilterStyle}
+              style={photoFilterStyle}
               className="absolute inset-0 h-full w-full object-cover transition-[filter] duration-200"
             />
           ) : (
             <video
               src={captured.url}
-              style={mediaFilterStyle}
+              style={videoFilterStyle}
               className="absolute inset-0 h-full w-full object-cover transition-[filter] duration-200"
               playsInline
               autoPlay
