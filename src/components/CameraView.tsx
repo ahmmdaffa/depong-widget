@@ -94,23 +94,16 @@ export default function CameraView({
 
   // Filter kamera (index 0 = paling kiri = Normal)
   const [filterIdx, setFilterIdx] = useState(0);
-  const [showFilterBanner, setShowFilterBanner] = useState(true);
+  const [filterPulse, setFilterPulse] = useState(false);
   const activeFilter = CAMERA_FILTERS[filterIdx] ?? CAMERA_FILTERS[0];
 
-  const triggerFilterBanner = useCallback(() => {
-    setShowFilterBanner(true);
+  const selectFilterIndex = useCallback((nextIdx: number) => {
+    const clamped = Math.max(0, Math.min(CAMERA_FILTERS.length - 1, nextIdx));
+    setFilterIdx(clamped);
+    setFilterPulse(true);
     window.clearTimeout(bannerTimerRef.current);
-    bannerTimerRef.current = window.setTimeout(() => setShowFilterBanner(false), 1800);
+    bannerTimerRef.current = window.setTimeout(() => setFilterPulse(false), 350);
   }, []);
-
-  const selectFilterIndex = useCallback(
-    (nextIdx: number) => {
-      const clamped = Math.max(0, Math.min(CAMERA_FILTERS.length - 1, nextIdx));
-      setFilterIdx(clamped);
-      triggerFilterBanner();
-    },
-    [triggerFilterBanner],
-  );
 
   // ---------- Kamera Resolusi Tinggi (Anti-Pecah) ----------
   useEffect(() => {
@@ -686,61 +679,59 @@ export default function CameraView({
           </div>
         )}
 
-        {/* Kontrol Filter di Bagian Tengah Gambar (Swipe Kanan/Kiri & Tombol Panah) */}
+        {/* Satu Kapsul Filter Tunggal yang Rapi (Berubah Teks Saat Gambar Di-Swipe Kiri/Kanan) */}
         {(cameraReady || captured) && !recording && (
-          <div className="pointer-events-none absolute inset-x-3 top-1/2 z-10 flex -translate-y-1/2 items-center justify-between">
-            <button
-              type="button"
-              onClick={() => selectFilterIndex(filterIdx - 1)}
-              disabled={filterIdx === 0}
-              className="pointer-events-auto flex h-9 w-9 items-center justify-center rounded-full border border-white/15 bg-black/45 text-white backdrop-blur-md transition active:scale-90 disabled:opacity-20"
-              aria-label="Geser ke filter kiri (Normal)"
+          <div
+            className={`absolute inset-x-0 z-10 flex flex-col items-center gap-1.5 ${
+              captured ? "bottom-16" : "bottom-4"
+            }`}
+          >
+            <div
+              className={`inline-flex items-center gap-2 rounded-full border border-white/15 bg-black/60 px-3 py-1.5 shadow-lg backdrop-blur-md transition-transform duration-200 ${
+                filterPulse ? "scale-105 border-gold/50" : "scale-100"
+              }`}
             >
-              <IconChevronLeft size={18} />
-            </button>
+              <button
+                type="button"
+                onClick={() => selectFilterIndex(filterIdx - 1)}
+                disabled={filterIdx === 0}
+                className="flex h-5 w-5 items-center justify-center rounded-full text-white/80 transition hover:text-white disabled:opacity-25"
+                aria-label="Filter sebelumnya"
+              >
+                <IconChevronLeft size={14} />
+              </button>
 
-            {showFilterBanner && (
-              <div className="flex flex-col items-center gap-1">
-                <span className="rounded-full border border-gold/40 bg-black/70 px-4 py-1.5 text-sm font-extrabold text-gold shadow-2xl backdrop-blur-md">
-                  {activeFilter.badge}
-                </span>
-                <span className="rounded-full bg-black/55 px-2.5 py-0.5 text-[10px] font-semibold text-white/85 backdrop-blur-md">
-                  {filterIdx === 0
-                    ? "Swipe kiri untuk ganti filter"
-                    : "← Swipe ke paling kiri untuk Normal"}
-                </span>
-              </div>
-            )}
+              <span
+                className={`min-w-[124px] text-center text-xs font-extrabold tracking-wide transition-colors ${
+                  filterIdx === 0 ? "text-white/90" : "text-gold"
+                }`}
+              >
+                {activeFilter.badge}
+              </span>
 
-            <button
-              type="button"
-              onClick={() => selectFilterIndex(filterIdx + 1)}
-              disabled={filterIdx === CAMERA_FILTERS.length - 1}
-              className="pointer-events-auto flex h-9 w-9 items-center justify-center rounded-full border border-white/15 bg-black/45 text-white backdrop-blur-md transition active:scale-90 disabled:opacity-20"
-              aria-label="Geser ke filter kanan"
-            >
-              <IconChevronRight size={18} />
-            </button>
-          </div>
-        )}
+              <button
+                type="button"
+                onClick={() => selectFilterIndex(filterIdx + 1)}
+                disabled={filterIdx === CAMERA_FILTERS.length - 1}
+                className="flex h-5 w-5 items-center justify-center rounded-full text-white/80 transition hover:text-white disabled:opacity-25"
+                aria-label="Filter berikutnya"
+              >
+                <IconChevronRight size={14} />
+              </button>
+            </div>
 
-        {/* Deretan Pill Filter (Paling Kiri = Normal) */}
-        {!captured && cameraReady && !recording && (
-          <div className="absolute inset-x-3 bottom-3.5 z-10 flex flex-col items-center gap-1.5">
-            <div className="flex max-w-full items-center gap-1.5 overflow-x-auto rounded-full border border-white/15 bg-black/60 p-1 backdrop-blur-md no-scrollbar">
+            {/* Indikator titik posisi swipe (Paling kiri = Normal) */}
+            <div className="flex items-center gap-1">
               {CAMERA_FILTERS.map((f, idx) => (
                 <button
                   key={f.id}
                   type="button"
                   onClick={() => selectFilterIndex(idx)}
-                  className={`shrink-0 rounded-full px-3 py-1 text-xs font-bold transition ${
-                    idx === filterIdx
-                      ? "bg-gold text-black shadow"
-                      : "text-white/80 hover:text-white"
+                  aria-label={f.name}
+                  className={`h-1.5 rounded-full transition-all duration-200 ${
+                    idx === filterIdx ? "w-4 bg-gold" : "w-1.5 bg-white/35"
                   }`}
-                >
-                  {f.badge}
-                </button>
+                />
               ))}
             </div>
           </div>
