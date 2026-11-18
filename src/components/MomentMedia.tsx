@@ -45,9 +45,19 @@ export function MomentMedia({
       src={url}
       className="h-full w-full -scale-x-100 object-cover"
       playsInline
+      autoPlay={active}
       loop
       muted={muted}
-      preload="metadata"
+      preload="auto"
+      onLoadedData={(e) => {
+        if (active) {
+          e.currentTarget.play().catch(() => undefined);
+        }
+      }}
+      onClick={(e) => {
+        const v = e.currentTarget;
+        if (v.paused) v.play().catch(() => undefined);
+      }}
       onTimeUpdate={(e) => {
         const v = e.currentTarget;
         const total = moment.duration || (Number.isFinite(v.duration) ? v.duration : 7);

@@ -77,7 +77,10 @@ async function writeStore(store: StoreShape): Promise<void> {
 function recomputeStats(store: StoreShape): StoreShape {
   const deleted = new Set(store.deletedIds);
   store.accounts = store.accounts.filter((a) => !deleted.has(a.id));
-  store.moments = store.moments.filter((m) => !deleted.has(m.user_id));
+  // Bersihkan momen dari akun yang dihapus atau momen lama yang masih berupa blob: lokal
+  store.moments = store.moments.filter(
+    (m) => !deleted.has(m.user_id) && !m.media_path.startsWith("blob:"),
+  );
   store.friendships = store.friendships.filter(
     (f) => !deleted.has(f.user_id) && !deleted.has(f.friend_id),
   );
@@ -140,13 +143,29 @@ export async function POST(req: Request) {
     if (Array.isArray(cs.moments)) {
       const byId = new Map(store.moments.map((m) => [m.id, m]));
       for (const m of cs.moments) {
-        if (!deleted.has(m.user_id)) {
+        if (deleted.has(m.user_id) || m.media_path.startsWith("blob:")) continue;
+        const existing = byId.get(m.id);
+        if (existing) {
+          byId.set(m.id, {
+            ...existing,
+            ...m,
+            // Pertahankan media_path lengkap di server bila client hanya mengirim placeholder ringan
+            media_path:
+              m.media_path && m.media_path !== "__SERVER_CACHED__"
+                ? m.media_path
+                : existing.media_path,
+            reactions:
+              (m.reactions?.length ?? 0) >= (existing.reactions?.length ?? 0)
+                ? m.reactions
+                : existing.reactions,
+          });
+        } else if (m.media_path && m.media_path !== "__SERVER_CACHED__") {
           byId.set(m.id, m);
         }
       }
-      store.moments = [...byId.values()].sort((a, b) =>
-        b.created_at.localeCompare(a.created_at),
-      );
+      store.moments = [...byId.values()]
+        .sort((a, b) => b.created_at.localeCompare(a.created_at))
+        .slice(0, 60);
     }
 
     if (Array.isArray(cs.friendships)) {
@@ -168,6 +187,20 @@ export async function POST(req: Request) {
   }
 
   const p = body.payload ?? {};
+
+  if (body.action === "create_moment" && p.moment && typeof p.moment === "object") {
+    const incoming = p.moment as Moment;
+    if (incoming.id && incoming.media_path && !incoming.media_path.startsWith("blob:")) {
+      store.moments = [
+        incoming,
+        ...store.moments.filter((m) => m.id !== incoming.id),
+      ].slice(0, 60);
+    }
+  }
+
+  if (body.action === "delete_moment" && typeof p.momentId === "string") {
+    store.moments = store.moments.filter((m) => m.id !== p.momentId);
+  }
 
   if (body.action === "delete_user" && typeof p.userId === "string") {
     const uid = p.userId;

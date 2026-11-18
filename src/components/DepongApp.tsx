@@ -211,6 +211,15 @@ export default function DepongApp() {
     };
   }, [userId, reloadAll]);
 
+  // ---------- Sinkronisasi berkala ringan agar video/foto dari teman langsung muncul ----------
+  useEffect(() => {
+    if (!userId) return;
+    const timer = window.setInterval(() => {
+      void reloadAll(userId);
+    }, 6000);
+    return () => window.clearInterval(timer);
+  }, [userId, reloadAll]);
+
   // ---------- Handler Login ----------
   async function handleAuthenticated(prof: Profile) {
     setUserId(prof.id);

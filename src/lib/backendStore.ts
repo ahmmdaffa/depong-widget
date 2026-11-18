@@ -13,6 +13,9 @@ const SESSION_KEY = "depong_active_user_id_v1";
 const SUPER_ADMIN_KEY = "depong_super_admin_session_v1";
 const CHANNEL_NAME = "depong_live_channel_v1";
 
+let memoryStore: StoreShape | null = null;
+const serverSyncedMomentIds = new Set<string>();
+
 export const SUPER_ADMIN_EMAIL = "admin123@gmail.com";
 export const SUPER_ADMIN_PASSWORD = "admin123";
 
@@ -61,43 +64,56 @@ function createInitialLocalStore(): StoreShape {
 
 export function loadLocalStore(): StoreShape {
   if (typeof window === "undefined") return createInitialLocalStore();
+  if (memoryStore) return memoryStore;
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY);
     if (raw) {
       const parsed = JSON.parse(raw) as Partial<StoreShape>;
       if (Array.isArray(parsed.accounts) && Array.isArray(parsed.moments)) {
-        return {
+        memoryStore = {
           accounts: parsed.accounts,
           friendships: parsed.friendships ?? [],
-          moments: parsed.moments,
+          moments: parsed.moments.filter((m) => !m.media_path.startsWith("blob:")),
           replies: parsed.replies ?? [],
           deletedIds: parsed.deletedIds ?? [],
           updatedAt: parsed.updatedAt ?? Date.now(),
         };
+        return memoryStore;
       }
     }
   } catch {
     // Fallback
   }
   const init = createInitialLocalStore();
+  memoryStore = init;
   saveLocalStore(init, false);
   return init;
 }
 
 export function saveLocalStore(store: StoreShape, broadcast = true): void {
+  memoryStore = store;
   if (typeof window === "undefined") return;
   try {
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(store));
   } catch {
-    // Jika kuota localStorage penuh karena media besar, simpan momen terbaru saja di localStorage
+    // Jika kuota localStorage penuh karena video, simpan akun + metadata & 4 momen terbaru di localStorage
+    // (seluruh momen lengkap tetap aman di memoryStore dan di server /api/store)
     try {
       const trimmed: StoreShape = {
         ...store,
-        moments: store.moments.slice(0, 12),
+        moments: store.moments.slice(0, 4),
       };
       window.localStorage.setItem(STORAGE_KEY, JSON.stringify(trimmed));
     } catch {
-      // Abaikan
+      try {
+        const accountsOnly: StoreShape = {
+          ...store,
+          moments: [],
+        };
+        window.localStorage.setItem(STORAGE_KEY, JSON.stringify(accountsOnly));
+      } catch {
+        // Abaikan
+      }
     }
   }
   if (broadcast && typeof BroadcastChannel !== "undefined") {
@@ -141,17 +157,34 @@ export async function syncWithServerStore(
 ): Promise<StoreShape> {
   const local = loadLocalStore();
   try {
+    // Agar request ringan & cepat, momen yang sudah pernah ter-upload ke server tidak perlu dikirim ulang base64-nya
+    const lightClientStore: Partial<StoreShape> = {
+      ...local,
+      moments: local.moments
+        .filter((m) => !m.media_path.startsWith("blob:"))
+        .map((m) =>
+          serverSyncedMomentIds.has(m.id) && m.media_path.length > 2048
+            ? { ...m, media_path: "__SERVER_CACHED__" }
+            : m,
+        ),
+    };
+
     const res = await fetch("/api/store", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         action,
         payload,
-        clientStore: local,
+        clientStore: lightClientStore,
       }),
     });
     if (res.ok) {
       const remote = (await res.json()) as StoreShape;
+      for (const m of remote.moments) {
+        if (m.media_path && m.media_path !== "__SERVER_CACHED__") {
+          serverSyncedMomentIds.add(m.id);
+        }
+      }
       saveLocalStore(remote, false);
       return remote;
     }
@@ -317,13 +350,8 @@ export async function createLocalMomentRecord(input: {
 }): Promise<Moment> {
   const store = loadLocalStore();
   const author = store.accounts.find((a) => a.id === input.userId);
-  // Untuk foto atau video kecil (< 3.5MB), simpan sebagai dataURL agar persisten saat refresh
-  let mediaPath: string;
-  if (input.blob.size <= 3.5 * 1024 * 1024) {
-    mediaPath = await blobToDataUrl(input.blob);
-  } else {
-    mediaPath = URL.createObjectURL(input.blob);
-  }
+  // Selalu konversi ke dataURL (bukan blob: lokal) agar pengguna lain di perangkat berbeda bisa melihat video/foto
+  const mediaPath = await blobToDataUrl(input.blob);
 
   const nowIso = new Date().toISOString();
   const moment: Moment = {
@@ -348,7 +376,7 @@ export async function createLocalMomentRecord(input: {
   }
   store.updatedAt = Date.now();
   saveLocalStore(store, true);
-  void syncWithServerStore("create_moment");
+  await syncWithServerStore("create_moment", { moment });
   return moment;
 }
 

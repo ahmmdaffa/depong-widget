@@ -237,7 +237,101 @@ export function captureSquareFrame(
     applyFilterEffectOnCanvas(ctx, out, out, filter);
   }
 
-  return canvasToJpeg(canvas, 0.94);
+  return canvasToJpeg(canvas, 0.92);
+}
+
+/**
+ * Gabungkan 2 foto (Kamera Belakang = Bingkai Besar, Kamera Depan = Bingkai Kecil di Kiri Atas)
+ * sesuai tata letak mockup Dual-Camera.
+ */
+export async function composeDualCameraPhoto(
+  backPhotoBlob: Blob,
+  frontVideo: HTMLVideoElement,
+  size = 1080,
+  mirrorFront = true,
+  filter?: CameraFilter,
+): Promise<Blob> {
+  const backBitmap = await createImageBitmap(backPhotoBlob);
+  const out = size;
+
+  const canvas = document.createElement("canvas");
+  canvas.width = out;
+  canvas.height = out;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) {
+    backBitmap.close();
+    throw new Error("Canvas tidak didukung");
+  }
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
+
+  // 1. Gambar Bingkai Besar (Kamera Belakang)
+  ctx.drawImage(backBitmap, 0, 0, out, out);
+  backBitmap.close();
+
+  // 2. Gambar Bingkai Kecil di Kiri Atas (Kamera Depan) sesuai proporsi mockup
+  const pipX = Math.round(out * 0.068);
+  const pipY = Math.round(out * 0.068);
+  const pipW = Math.round(out * 0.275);
+  const pipH = Math.round(out * 0.345);
+  const pipR = Math.round(out * 0.042);
+
+  const vw = frontVideo.videoWidth || out;
+  const vh = frontVideo.videoHeight || out;
+  const targetAspect = pipW / pipH;
+  const videoAspect = vw / vh;
+
+  let sx = 0;
+  let sy = 0;
+  let sw = vw;
+  let sh = vh;
+  if (videoAspect > targetAspect) {
+    sw = vh * targetAspect;
+    sx = (vw - sw) / 2;
+  } else {
+    sh = vw / targetAspect;
+    sy = (vh - sh) / 2;
+  }
+
+  // Bayangan lembut di belakang bingkai kecil
+  ctx.save();
+  ctx.shadowColor = "rgba(0, 0, 0, 0.45)";
+  ctx.shadowBlur = Math.round(out * 0.022);
+  ctx.shadowOffsetY = Math.round(out * 0.008);
+  ctx.beginPath();
+  ctx.roundRect(pipX, pipY, pipW, pipH, pipR);
+  ctx.fillStyle = "#161618";
+  ctx.fill();
+  ctx.restore();
+
+  // Isi foto kamera depan di dalam bingkai kecil
+  ctx.save();
+  ctx.beginPath();
+  ctx.roundRect(pipX, pipY, pipW, pipH, pipR);
+  ctx.clip();
+  if (mirrorFront) {
+    ctx.translate(pipX + pipW, pipY);
+    ctx.scale(-1, 1);
+    ctx.drawImage(frontVideo, sx, sy, sw, sh, 0, 0, pipW, pipH);
+  } else {
+    ctx.drawImage(frontVideo, sx, sy, sw, sh, pipX, pipY, pipW, pipH);
+  }
+  ctx.restore();
+
+  // Garis tepi (border) halus pada bingkai kecil
+  ctx.save();
+  ctx.beginPath();
+  ctx.roundRect(pipX, pipY, pipW, pipH, pipR);
+  ctx.lineWidth = Math.max(3, Math.round(out * 0.0045));
+  ctx.strokeStyle = "rgba(15, 15, 18, 0.85)";
+  ctx.stroke();
+  ctx.restore();
+
+  if (filter && filter.id !== "normal") {
+    applyFilterEffectOnCanvas(ctx, out, out, filter);
+  }
+
+  return canvasToJpeg(canvas, 0.92);
 }
 
 /** Terapkan filter pada Blob gambar yang sudah diambil (misal saat user ganti filter di layar preview). */

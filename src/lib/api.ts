@@ -144,7 +144,7 @@ export async function removeFriend(friendId: string, currentUserId?: string) {
 /** Ambil momen milik sendiri + sahabat. */
 export async function fetchMoments(): Promise<Moment[]> {
   if (!isSupabaseConfigured) {
-    const store = loadLocalStore();
+    const store = await syncWithServerStore();
     const accMap = new Map(store.accounts.map((a) => [a.id, toPublicProfile(a)]));
     return store.moments.map((m) => ({
       ...m,
@@ -204,7 +204,7 @@ export async function deleteMoment(moment: Pick<Moment, "id" | "media_path">) {
     store.moments = store.moments.filter((m) => m.id !== moment.id);
     store.updatedAt = Date.now();
     saveLocalStore(store, true);
-    await syncWithServerStore("delete_moment");
+    await syncWithServerStore("delete_moment", { momentId: moment.id });
     return;
   }
   const supabase = getSupabase();

@@ -8,6 +8,7 @@ import {
   baseMime,
   CAMERA_FILTERS,
   captureSquareFrame,
+  composeDualCameraPhoto,
   extFromMime,
   getVideoDuration,
   MAX_UPLOAD_BYTES,
@@ -37,10 +38,16 @@ interface Captured {
   bakedFilterId: string;
 }
 
+interface BackShot {
+  blob: Blob;
+  url: string;
+}
+
 const RING_RADIUS = 36;
 const RING_CIRCUMFERENCE = 2 * Math.PI * RING_RADIUS;
-const HIGH_VIDEO_BITRATE = 6_000_000; // 6 Mbps agar video 7 detik tajam & tidak pecah
-const HIGH_AUDIO_BITRATE = 128_000;
+// 1.5 Mbps menghasilkan video 7 detik tajam (~900 KB) dan ringan agar langsung bisa dilihat pengguna lain
+const HIGH_VIDEO_BITRATE = 1_500_000;
+const HIGH_AUDIO_BITRATE = 64_000;
 
 const round1 = (n: number) => Math.round(n * 10) / 10;
 
@@ -76,11 +83,15 @@ export default function CameraView({
   const bannerTimerRef = useRef<number | undefined>(undefined);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const capturedUrlRef = useRef<string | null>(null);
+  const backShotUrlRef = useRef<string | null>(null);
   const swipeStartXRef = useRef<number | null>(null);
   const swipeCurrentXRef = useRef<number | null>(null);
 
   const [mode, setMode] = useState<MediaType>("photo");
-  const [facing, setFacing] = useState<"user" | "environment">("user");
+  // Mode FOTO dimulai dari kamera belakang ("environment") dulu, lalu otomatis pindah ke kamera depan ("user")
+  const [facing, setFacing] = useState<"user" | "environment">("environment");
+  const [backShot, setBackShot] = useState<BackShot | null>(null);
+
   const [cameraReady, setCameraReady] = useState(false);
   const [cameraError, setCameraError] = useState<string | null>(null);
   const [retryKey, setRetryKey] = useState(0);
@@ -105,7 +116,13 @@ export default function CameraView({
     bannerTimerRef.current = window.setTimeout(() => setFilterPulse(false), 350);
   }, []);
 
-  // ---------- Kamera Resolusi Tinggi (Anti-Pecah) ----------
+  const clearBackShot = useCallback(() => {
+    if (backShotUrlRef.current) URL.revokeObjectURL(backShotUrlRef.current);
+    backShotUrlRef.current = null;
+    setBackShot(null);
+  }, []);
+
+  // ---------- Kamera Resolusi Tinggi & Switching Depan/Belakang Mulus ----------
   useEffect(() => {
     let cancelled = false;
 
@@ -117,24 +134,24 @@ export default function CameraView({
           );
         }
 
+        // Hentikan stream kamera sebelumnya terlebih dahulu agar kamera HP bisa ganti belakang -> depan tanpa gagal
+        streamRef.current?.getTracks().forEach((t) => t.stop());
+        streamRef.current = null;
+
         let stream: MediaStream;
         try {
           stream = await navigator.mediaDevices.getUserMedia({
             video: {
-              facingMode: facing,
-              width: { ideal: 1920, min: 1280 },
-              height: { ideal: 1080, min: 720 },
-              frameRate: { ideal: 30, max: 60 },
+              facingMode: { ideal: facing },
+              width: { ideal: 1280 },
+              height: { ideal: 720 },
+              frameRate: { ideal: 30 },
             },
             audio: false,
           });
         } catch {
           stream = await navigator.mediaDevices.getUserMedia({
-            video: {
-              facingMode: facing,
-              width: { ideal: 1280 },
-              height: { ideal: 720 },
-            },
+            video: true,
             audio: false,
           });
         }
@@ -143,7 +160,6 @@ export default function CameraView({
           stream.getTracks().forEach((t) => t.stop());
           return;
         }
-        streamRef.current?.getTracks().forEach((t) => t.stop());
         streamRef.current = stream;
         const video = videoRef.current;
         if (video) {
@@ -188,6 +204,7 @@ export default function CameraView({
       }
       audioRef.current?.getTracks().forEach((t) => t.stop());
       if (capturedUrlRef.current) URL.revokeObjectURL(capturedUrlRef.current);
+      if (backShotUrlRef.current) URL.revokeObjectURL(backShotUrlRef.current);
     };
   }, []);
 
@@ -214,12 +231,22 @@ export default function CameraView({
     capturedUrlRef.current = null;
     setCaptured(null);
     setCaption("");
-  }, []);
+    clearBackShot();
+    if (mode === "photo") {
+      setFacing("environment");
+    }
+  }, [clearBackShot, mode]);
 
   function selectMode(next: MediaType) {
     if (recording || captured) return;
+    clearBackShot();
     setMode(next);
-    if (next === "video") void acquireAudio();
+    if (next === "video") {
+      setFacing("user");
+      void acquireAudio();
+    } else {
+      setFacing("environment");
+    }
   }
 
   async function flashThen<T>(fn: () => Promise<T>): Promise<T> {
@@ -255,26 +282,46 @@ export default function CameraView({
     if (Math.abs(deltaX) < 30) return;
 
     if (deltaX < 0) {
-      // Geser ke kiri -> maju ke filter berikutnya
       selectFilterIndex(filterIdx + 1);
     } else {
-      // Geser ke kanan -> kembali ke arah paling kiri (Normal)
       selectFilterIndex(filterIdx - 1);
     }
   }
 
-  // ---------- Foto Resolusi Tinggi ----------
+  // ---------- Sesi Foto 2x (1. Belakang Bingkai Besar -> 2. Depan Bingkai Kecil) ----------
   async function takePhoto() {
     const video = videoRef.current;
     if (!video || !video.videoWidth) return;
     try {
-      // Simpan frame dasar tanpa filter dulu supaya di layar preview user tetap bisa ganti-ganti filter!
-      const rawBlob = await flashThen(() =>
-        captureSquareFrame(video, 1440, facing === "user", CAMERA_FILTERS[0]),
+      if (!backShot) {
+        // Jepretan 1: Foto Kamera Belakang (Bingkai Besar)
+        const firstBlob = await flashThen(() =>
+          captureSquareFrame(video, 1080, facing === "user", CAMERA_FILTERS[0]),
+        );
+        if (backShotUrlRef.current) URL.revokeObjectURL(backShotUrlRef.current);
+        const url = URL.createObjectURL(firstBlob);
+        backShotUrlRef.current = url;
+        setBackShot({ blob: firstBlob, url });
+        // Otomatis ganti ke kamera depan untuk jepretan ke-2 (Bingkai Kecil)
+        setFacing("user");
+        notify("Foto belakang tersimpan! Sekarang ambil foto kamera depan 📸");
+        return;
+      }
+
+      // Jepretan 2: Foto Kamera Depan (Bingkai Kecil Kiri Atas) -> Gabungkan dengan Foto Belakang
+      const combinedBlob = await flashThen(() =>
+        composeDualCameraPhoto(
+          backShot.blob,
+          video,
+          1080,
+          facing === "user",
+          CAMERA_FILTERS[0],
+        ),
       );
+      clearBackShot();
       showCaptured({
-        blob: rawBlob,
-        url: URL.createObjectURL(rawBlob),
+        blob: combinedBlob,
+        url: URL.createObjectURL(combinedBlob),
         type: "photo",
         duration: null,
         mime: "image/jpeg",
@@ -285,7 +332,7 @@ export default function CameraView({
     }
   }
 
-  // ---------- Video 7 Detik HD (Anti-Pecah + Mendukung Filter) ----------
+  // ---------- Video 7 Detik (Tajam & Ringan Agar Bisa Dilihat Pengguna Lain) ----------
   const stopRecording = useCallback(() => {
     window.clearTimeout(stopTimerRef.current);
     cancelAnimationFrame(rafRef.current);
@@ -320,7 +367,7 @@ export default function CameraView({
       const side = Math.min(vw, vh);
       const sx = (vw - side) / 2;
       const sy = (vh - side) / 2;
-      const outSide = Math.min(1080, Math.max(720, side));
+      const outSide = 720;
 
       const recCanvas = document.createElement("canvas");
       recCanvas.width = outSide;
@@ -422,8 +469,9 @@ export default function CameraView({
     e.target.value = "";
     if (!file) return;
     try {
+      clearBackShot();
       if (file.type.startsWith("image/")) {
-        const blob = await resizeImage(file);
+        const blob = await resizeImage(file, 1080);
         showCaptured({
           blob,
           url: URL.createObjectURL(blob),
@@ -493,7 +541,7 @@ export default function CameraView({
           caption,
         });
         discard();
-        notify("Momen ditambahkan ke Feed (Mode Demo) 💛");
+        notify("Momen ditambahkan ke Feed 💛");
         onSent();
         return;
       }
@@ -548,7 +596,7 @@ export default function CameraView({
 
   return (
     <div className="flex h-full flex-col items-center justify-between gap-4 px-4 pt-2 pb-28">
-      {/* Viewfinder squircle (Mendukung Swipe Kanan/Kiri untuk Filter) */}
+      {/* Viewfinder squircle */}
       <div
         onTouchStart={(e) => onSwipeStart(e.touches[0].clientX)}
         onTouchMove={(e) => onSwipeMove(e.touches[0].clientX)}
@@ -558,16 +606,45 @@ export default function CameraView({
         onMouseUp={(e) => onSwipeEnd(e.clientX)}
         className="relative aspect-square w-full touch-pan-y overflow-hidden rounded-[44px] border border-white/10 bg-panel shadow-2xl select-none"
       >
-        <video
-          ref={videoRef}
-          style={videoFilterStyle}
-          className={`h-full w-full object-cover transition-[filter] duration-200 ${
-            captured ? "invisible" : ""
-          }`}
-          playsInline
-          muted
-          autoPlay
-        />
+        {/* Saat Tahap 2 Foto (backShot sudah diambil), tampilkan Foto Belakang di Bingkai Besar */}
+        {backShot && !captured && (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src={backShot.url}
+            alt="Foto Kamera Belakang"
+            style={photoFilterStyle}
+            className="absolute inset-0 h-full w-full object-cover"
+          />
+        )}
+
+        {/* Satu elemen <video> tunggal yang otomatis mengecil ke Bingkai Kecil Kiri Atas pada Tahap 2/2 */}
+        <div
+          className={` transition-all duration-300 ${
+            backShot && !captured
+              ? "absolute z-10 overflow-hidden border-2 border-ink/85 bg-panel shadow-2xl"
+              : "h-full w-full"
+          } ${captured ? "invisible" : ""}`}
+          style={
+            backShot && !captured
+              ? {
+                  left: "6.8%",
+                  top: "6.8%",
+                  width: "27.5%",
+                  height: "34.5%",
+                  borderRadius: "16px",
+                }
+              : undefined
+          }
+        >
+          <video
+            ref={videoRef}
+            style={videoFilterStyle}
+            className="h-full w-full object-cover transition-[filter] duration-200"
+            playsInline
+            muted
+            autoPlay
+          />
+        </div>
 
         {captured &&
           (captured.type === "photo" ? (
@@ -590,13 +667,14 @@ export default function CameraView({
             />
           ))}
 
-        {/* Overlay Color-Grading Live (Menjamin filter 100% terlihat di iOS Safari & semua HP) */}
+        {/* Overlay Color-Grading Live */}
         {shouldApplyPreviewFilter && activeFilter.tint && activeFilter.tint[3] > 0 && (
           <div
             className="pointer-events-none absolute inset-0 transition-opacity duration-200"
             style={{
               backgroundColor: `rgba(${activeFilter.tint[0]}, ${activeFilter.tint[1]}, ${activeFilter.tint[2]}, ${activeFilter.tint[3]})`,
-              mixBlendMode: (activeFilter.blendMode as React.CSSProperties["mixBlendMode"]) ?? "overlay",
+              mixBlendMode:
+                (activeFilter.blendMode as React.CSSProperties["mixBlendMode"]) ?? "overlay",
             }}
           />
         )}
@@ -636,7 +714,7 @@ export default function CameraView({
                 <p className="text-xs text-muted">Atau pilih foto/video dari galeri ↓</p>
               </>
             ) : (
-              <p className="text-sm text-muted">Membuka kamera HD…</p>
+              <p className="text-sm text-muted">Membuka kamera…</p>
             )}
           </div>
         )}
@@ -644,28 +722,47 @@ export default function CameraView({
         {/* Kontrol atas viewfinder */}
         {!captured && (
           <div className="absolute inset-x-4 top-4 z-10 flex items-center justify-between">
-            <button
-              onClick={() => setFlashOn((v) => !v)}
-              className={`flex h-10 w-10 items-center justify-center rounded-full bg-black/45 backdrop-blur-md ${
-                flashOn ? "text-gold" : "text-white"
-              }`}
-              aria-label="Flash"
-            >
-              <IconBolt size={18} fill={flashOn ? "currentColor" : "none"} />
-            </button>
+            {!backShot ? (
+              <button
+                onClick={() => setFlashOn((v) => !v)}
+                className={`flex h-10 w-10 items-center justify-center rounded-full bg-black/45 backdrop-blur-md ${
+                  flashOn ? "text-gold" : "text-white"
+                }`}
+                aria-label="Flash"
+              >
+                <IconBolt size={18} fill={flashOn ? "currentColor" : "none"} />
+              </button>
+            ) : (
+              <span className="h-10 w-10" />
+            )}
 
             {recording ? (
               <span className="flex items-center gap-1.5 rounded-full bg-black/65 px-3 py-1.5 text-xs font-semibold backdrop-blur-md">
                 <span className="h-2 w-2 animate-pulse rounded-full bg-red-500" />
                 0:0{elapsedSec} / 0:0{MAX_VIDEO_SECONDS}
               </span>
+            ) : mode === "photo" ? (
+              <span className="rounded-full bg-black/55 px-3.5 py-1.5 text-xs font-bold text-gold backdrop-blur-md">
+                {!backShot ? "1/2 • Foto Belakang" : "2/2 • Foto Depan"}
+              </span>
             ) : (
               <span className="rounded-full bg-black/45 px-3 py-1.5 text-xs font-semibold text-white/90 backdrop-blur-md">
-                {mode === "video" ? `HD Video ${MAX_VIDEO_SECONDS}s` : "HD Foto"}
+                {`HD Video ${MAX_VIDEO_SECONDS}s`}
               </span>
             )}
 
-            {filterIdx > 0 ? (
+            {backShot ? (
+              <button
+                type="button"
+                onClick={() => {
+                  clearBackShot();
+                  setFacing("environment");
+                }}
+                className="rounded-full bg-black/60 px-3 py-1.5 text-xs font-bold text-white backdrop-blur-md"
+              >
+                Ulang 1/2
+              </button>
+            ) : filterIdx > 0 ? (
               <button
                 type="button"
                 onClick={() => selectFilterIndex(0)}
@@ -679,7 +776,7 @@ export default function CameraView({
           </div>
         )}
 
-        {/* Satu Kapsul Filter Tunggal yang Rapi (Berubah Teks Saat Gambar Di-Swipe Kiri/Kanan) */}
+        {/* Satu Kapsul Filter Tunggal yang Rapi */}
         {(cameraReady || captured) && !recording && (
           <div
             className={`absolute inset-x-0 z-10 flex flex-col items-center gap-1.5 ${
@@ -720,7 +817,6 @@ export default function CameraView({
               </button>
             </div>
 
-            {/* Indikator titik posisi swipe (Paling kiri = Normal) */}
             <div className="flex items-center gap-1">
               {CAMERA_FILTERS.map((f, idx) => (
                 <button
@@ -834,7 +930,15 @@ export default function CameraView({
               onClick={handleShutter}
               disabled={!cameraReady}
               className="relative flex h-20 w-20 items-center justify-center transition active:scale-95 disabled:opacity-50"
-              aria-label={mode === "photo" ? "Ambil foto" : recording ? "Stop rekam" : "Mulai rekam"}
+              aria-label={
+                mode === "photo"
+                  ? !backShot
+                    ? "Ambil foto belakang (1/2)"
+                    : "Ambil foto depan (2/2)"
+                  : recording
+                    ? "Stop rekam"
+                    : "Mulai rekam"
+              }
             >
               <svg className="absolute inset-0 -rotate-90" width="80" height="80" viewBox="0 0 80 80">
                 <circle
