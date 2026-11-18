@@ -84,7 +84,7 @@ export default function DepongApp() {
         const [prof, fr, mo] = await Promise.all([
           fetchProfile(uid),
           fetchFriends(uid),
-          fetchMoments(),
+          fetchMoments(uid),
         ]);
         if (prof) {
           setProfile(prof);
@@ -97,6 +97,10 @@ export default function DepongApp() {
         }
         setFriends(fr);
         setMoments(mo);
+        setFeedFilter((prev) => {
+          if (prev === "all" || prev === "me") return prev;
+          return fr.some((f) => f.id === prev) ? prev : "all";
+        });
       } catch (err) {
         notify(errorMessage(err));
       }
@@ -122,7 +126,7 @@ export default function DepongApp() {
             setEmail(prof.email ?? "");
             const [fr, mo] = await Promise.all([
               fetchFriends(prof.id),
-              fetchMoments(),
+              fetchMoments(prof.id),
             ]);
             if (active) {
               setFriends(fr);

@@ -85,6 +85,10 @@ export async function fetchFriends(userId: string): Promise<PublicProfile[]> {
     .filter((f): f is PublicProfile => Boolean(f));
 }
 
+function friendPairKey(u1: string, u2: string): string {
+  return u1 < u2 ? `${u1}:${u2}` : `${u2}:${u1}`;
+}
+
 export async function addFriendByCode(code: string, currentUserId?: string): Promise<PublicProfile> {
   if (!isSupabaseConfigured) {
     const store = await syncWithServerStore();
@@ -100,6 +104,9 @@ export async function addFriendByCode(code: string, currentUserId?: string): Pro
     if (target.id === uid) {
       throw new Error("Itu kode undangan kamu sendiri");
     }
+    const pair = friendPairKey(uid, target.id);
+    store.removedFriendKeys = (store.removedFriendKeys ?? []).filter((k) => k !== pair);
+
     const exists = store.friendships.some(
       (f) => f.user_id === uid && f.friend_id === target.id,
     );
@@ -112,7 +119,7 @@ export async function addFriendByCode(code: string, currentUserId?: string): Pro
       target.friends_count = (target.friends_count ?? 0) + 1;
       store.updatedAt = Date.now();
       saveLocalStore(store, true);
-      await syncWithServerStore("add_friend");
+      await syncWithServerStore("add_friend", { userId: uid, friendId: target.id });
     }
     return toPublicProfile(target);
   }
@@ -125,31 +132,51 @@ export async function removeFriend(friendId: string, currentUserId?: string) {
   if (!isSupabaseConfigured) {
     const store = loadLocalStore();
     const uid = currentUserId;
-    store.friendships = store.friendships.filter(
-      (f) =>
-        !(
-          (uid && f.user_id === uid && f.friend_id === friendId) ||
-          (uid && f.user_id === friendId && f.friend_id === uid)
-        ),
-    );
-    store.updatedAt = Date.now();
-    saveLocalStore(store, true);
-    await syncWithServerStore("remove_friend");
+    if (uid) {
+      const pair = friendPairKey(uid, friendId);
+      if (!store.removedFriendKeys) store.removedFriendKeys = [];
+      if (!store.removedFriendKeys.includes(pair)) {
+        store.removedFriendKeys.push(pair);
+      }
+      store.friendships = store.friendships.filter(
+        (f) => friendPairKey(f.user_id, f.friend_id) !== pair,
+      );
+      store.updatedAt = Date.now();
+      // saveLocalStore otomatis menghapus foto/video milik teman yang dihapus dari penyimpanan lokal user
+      saveLocalStore(store, true);
+      await syncWithServerStore("remove_friend", { userId: uid, friendId });
+    }
     return;
   }
   const { error } = await getSupabase().rpc("remove_friend", { target: friendId });
   if (error) throw error;
 }
 
-/** Ambil momen milik sendiri + sahabat. */
-export async function fetchMoments(): Promise<Moment[]> {
+/** Ambil momen milik sendiri + sahabat yang sudah saling invite pertemanan saja. */
+export async function fetchMoments(currentUserId?: string): Promise<Moment[]> {
   if (!isSupabaseConfigured) {
     const store = await syncWithServerStore();
     const accMap = new Map(store.accounts.map((a) => [a.id, toPublicProfile(a)]));
-    return store.moments.map((m) => ({
-      ...m,
-      profile: m.profile ?? accMap.get(m.user_id) ?? null,
-    }));
+
+    if (!currentUserId) {
+      return [];
+    }
+
+    const activeFriendIds = new Set(
+      store.friendships
+        .filter((f) => f.user_id === currentUserId)
+        .map((f) => f.friend_id),
+    );
+
+    // Simpan kembali ke localStorage agar momen dari non-teman / mantan teman terhapus dari penyimpanan lokal
+    saveLocalStore(store, false);
+
+    return store.moments
+      .filter((m) => m.user_id === currentUserId || activeFriendIds.has(m.user_id))
+      .map((m) => ({
+        ...m,
+        profile: m.profile ?? accMap.get(m.user_id) ?? null,
+      }));
   }
   const { data, error } = await getSupabase()
     .from("moments")

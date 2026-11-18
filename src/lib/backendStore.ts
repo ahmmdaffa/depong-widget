@@ -76,6 +76,8 @@ export function loadLocalStore(): StoreShape {
           moments: parsed.moments.filter((m) => !m.media_path.startsWith("blob:")),
           replies: parsed.replies ?? [],
           deletedIds: parsed.deletedIds ?? [],
+          deletedMomentIds: parsed.deletedMomentIds ?? [],
+          removedFriendKeys: parsed.removedFriendKeys ?? [],
           updatedAt: parsed.updatedAt ?? Date.now(),
         };
         return memoryStore;
@@ -93,21 +95,35 @@ export function loadLocalStore(): StoreShape {
 export function saveLocalStore(store: StoreShape, broadcast = true): void {
   memoryStore = store;
   if (typeof window === "undefined") return;
+
+  // Untuk penyimpanan lokal browser user, bersihkan foto/video dari orang yang bukan sahabat aktif
+  const activeUid = window.localStorage.getItem(SESSION_KEY);
+  let forLocalStorage = store;
+  if (activeUid) {
+    const activeFriendIds = new Set(
+      store.friendships.filter((f) => f.user_id === activeUid).map((f) => f.friend_id),
+    );
+    forLocalStorage = {
+      ...store,
+      moments: store.moments.filter(
+        (m) => m.user_id === activeUid || activeFriendIds.has(m.user_id),
+      ),
+    };
+  }
+
   try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(store));
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(forLocalStorage));
   } catch {
-    // Jika kuota localStorage penuh karena video, simpan akun + metadata & 4 momen terbaru di localStorage
-    // (seluruh momen lengkap tetap aman di memoryStore dan di server /api/store)
     try {
       const trimmed: StoreShape = {
-        ...store,
-        moments: store.moments.slice(0, 4),
+        ...forLocalStorage,
+        moments: forLocalStorage.moments.slice(0, 4),
       };
       window.localStorage.setItem(STORAGE_KEY, JSON.stringify(trimmed));
     } catch {
       try {
         const accountsOnly: StoreShape = {
-          ...store,
+          ...forLocalStorage,
           moments: [],
         };
         window.localStorage.setItem(STORAGE_KEY, JSON.stringify(accountsOnly));
@@ -285,19 +301,11 @@ export async function registerLocalAccount(input: {
     password: input.password,
   };
 
-  // Otomatis berteman dengan akun demo utama agar Feed tidak kosong saat baru daftar
-  const defaultFriend = store.accounts[0];
-  if (defaultFriend && defaultFriend.id !== id) {
-    store.friendships.push({ user_id: id, friend_id: defaultFriend.id, created_at: nowIso });
-    store.friendships.push({ user_id: defaultFriend.id, friend_id: id, created_at: nowIso });
-    newAcc.friends_count = 1;
-  }
-
   store.accounts.unshift(newAcc);
   store.updatedAt = Date.now();
+  setActiveSessionUserId(newAcc.id);
   saveLocalStore(store, true);
   await syncWithServerStore("register_user");
-  setActiveSessionUserId(newAcc.id);
   return toProfile(newAcc);
 }
 
