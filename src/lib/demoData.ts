@@ -23,13 +23,15 @@ function svgSceneDataUrl(bg1: string, bg2: string, accent: string, emoji: string
   return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
 }
 
+const DEFAULT_REF_MS = 1794980000000;
+
 export const DEMO_PROFILE: Profile = {
   id: "demo-user-daffa",
   username: "daffa",
   display_name: "Daffa",
   avatar_url: null,
   invite_code: "daffa7s",
-  created_at: new Date().toISOString(),
+  created_at: new Date(DEFAULT_REF_MS).toISOString(),
 };
 
 export const DEMO_FRIENDS: PublicProfile[] = [
@@ -39,8 +41,7 @@ export const DEMO_FRIENDS: PublicProfile[] = [
   { id: "friend-aris", username: "aris_m", display_name: "Aris", avatar_url: null },
 ];
 
-export function createInitialDemoMoments(): Moment[] {
-  const now = Date.now();
+export function createInitialDemoMoments(now = DEFAULT_REF_MS): Moment[] {
   return [
     {
       id: "demo-m-1",
@@ -98,8 +99,7 @@ export function createInitialDemoMoments(): Moment[] {
   ];
 }
 
-export function createDemoAdminUsers(): AdminUserSummary[] {
-  const now = Date.now();
+export function createDemoAdminUsers(now = DEFAULT_REF_MS): AdminUserSummary[] {
   const h = 3600 * 1000;
   const d = 24 * h;
 

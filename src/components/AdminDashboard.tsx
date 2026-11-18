@@ -42,7 +42,7 @@ export default function AdminDashboard() {
   const [confirmDeleteUser, setConfirmDeleteUser] = useState<AdminUserSummary | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
-  const [nowMs, setNowMs] = useState(() => Date.now());
+  const [nowMs, setNowMs] = useState(1794980000000);
 
   const notify = useCallback((msg: string) => {
     setToast(msg);
@@ -63,7 +63,15 @@ export default function AdminDashboard() {
   }, [notify]);
 
   useEffect(() => {
-    if (!unlocked || source !== "supabase" || !isSupabaseConfigured) return;
+    if (!unlocked) return;
+    if (source === "demo" || !isSupabaseConfigured) {
+      const current = Date.now();
+      const t = window.setTimeout(() => {
+        setNowMs(current);
+        setUsers(createDemoAdminUsers(current));
+      }, 0);
+      return () => window.clearTimeout(t);
+    }
     let active = true;
     fetchAdminUsers()
       .then((list) => {
@@ -343,10 +351,11 @@ export default function AdminDashboard() {
               </button>
               <button
                 onClick={() => {
+                  const current = Date.now();
                   setSource("demo");
                   setLoading(false);
-                  setUsers(createDemoAdminUsers());
-                  setNowMs(Date.now());
+                  setNowMs(current);
+                  setUsers(createDemoAdminUsers(current));
                 }}
                 className={`rounded-full px-3 py-1 transition ${
                   source === "demo" ? "bg-gold text-black" : "text-muted"

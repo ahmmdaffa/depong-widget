@@ -166,7 +166,7 @@ export default function DepongApp() {
     setEmail("daffa@depong.demo");
     setProfile(DEMO_PROFILE);
     setFriends(DEMO_FRIENDS);
-    setMoments(createInitialDemoMoments());
+    setMoments(createInitialDemoMoments(Date.now()));
     setTab("camera");
     notify("Mode Demo Aktif — kamera & video 7s siap dicoba!");
   }
