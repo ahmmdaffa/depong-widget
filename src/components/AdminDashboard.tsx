@@ -930,7 +930,7 @@ export default function AdminDashboard() {
             className="animate-sheet-up w-full max-w-md overflow-hidden rounded-[36px] border border-white/15 bg-panel shadow-2xl"
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="relative aspect-square w-full bg-ink">
+            <div className="relative aspect-[4/5] w-full bg-ink">
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img
                 src={mediaUrl(previewPhoto.media_path)}

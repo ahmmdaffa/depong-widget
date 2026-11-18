@@ -221,7 +221,7 @@ export default function CameraView({
     try {
       if (!backShot) {
         const firstBlob = await flashThen(() =>
-          captureSquareFrame(video, PHOTO_CAPTURE_SIZE, facing === "user", CAMERA_FILTERS[0]),
+          captureSquareFrame(video, facing === "user", CAMERA_FILTERS[0]),
         );
         if (backShotUrlRef.current) URL.revokeObjectURL(backShotUrlRef.current);
         const url = URL.createObjectURL(firstBlob);
@@ -236,7 +236,6 @@ export default function CameraView({
         composeDualCameraPhoto(
           backShot.blob,
           video,
-          PHOTO_CAPTURE_SIZE,
           facing === "user",
           CAMERA_FILTERS[0],
         ),
@@ -336,8 +335,8 @@ export default function CameraView({
   };
 
   return (
-    <div className="flex h-full flex-col items-center justify-between gap-3 px-3 pt-1 pb-24">
-      {/* Bingkai Kamera (Viewfinder) Diperlebar & Diperbesar Memanfaatkan Ruang Kosong */}
+    <div className="flex h-full flex-col items-center justify-between gap-2.5 px-3 pt-1 pb-24">
+      {/* Bingkai Kamera 4:5 Portrait Mobile (Sama persis dengan rasio hasil foto 1152x1440 agar tidak ada sisi yang terpotong) */}
       <div
         onTouchStart={(e) => onSwipeStart(e.touches[0].clientX)}
         onTouchMove={(e) => onSwipeMove(e.touches[0].clientX)}
@@ -345,7 +344,7 @@ export default function CameraView({
         onMouseDown={(e) => onSwipeStart(e.clientX)}
         onMouseMove={(e) => onSwipeMove(e.clientX)}
         onMouseUp={(e) => onSwipeEnd(e.clientX)}
-        className="relative w-full flex-1 min-h-[370px] max-h-[540px] touch-pan-y overflow-hidden rounded-[44px] border border-white/10 bg-panel shadow-2xl select-none"
+        className="relative aspect-[4/5] w-full max-h-[64dvh] touch-pan-y overflow-hidden rounded-[40px] border border-white/10 bg-panel shadow-2xl select-none"
       >
         {backShot && !captured && (
           // eslint-disable-next-line @next/next/no-img-element
@@ -360,16 +359,16 @@ export default function CameraView({
         <div
           className={`transition-all duration-300 ${
             backShot && !captured
-              ? "absolute z-10 overflow-hidden border-2 border-ink/85 bg-panel shadow-2xl"
+              ? "absolute z-10 overflow-hidden border-[3px] border-ink/90 bg-panel shadow-2xl"
               : "h-full w-full"
           } ${captured ? "invisible" : ""}`}
           style={
             backShot && !captured
               ? {
-                  left: "6.5%",
-                  top: "6.5%",
-                  width: "28%",
-                  height: "35%",
+                  left: "6%",
+                  top: "5%",
+                  width: "30%",
+                  height: "31%",
                   borderRadius: "18px",
                 }
               : undefined

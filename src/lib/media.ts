@@ -1,5 +1,7 @@
 export const MAX_UPLOAD_BYTES = 10 * 1024 * 1024; // 10 MB
-export const PHOTO_CAPTURE_SIZE = 1440; // Resolusi foto tinggi (1440x1440) agar tajam & tidak kecil
+export const PHOTO_WIDTH = 1152; // Rasio 4:5 Portrait Mobile HD (1152x1440) agar full & tidak terpotong
+export const PHOTO_HEIGHT = 1440;
+export const PHOTO_CAPTURE_SIZE = PHOTO_HEIGHT;
 
 export interface CameraFilter {
   id: string;
@@ -118,13 +120,14 @@ export function applyFilterEffectOnCanvas(
 
   if (filter.vignette && filter.vignette > 0) {
     ctx.save();
+    const maxDim = Math.max(width, height);
     const grad = ctx.createRadialGradient(
       width / 2,
       height / 2,
-      width * 0.28,
+      maxDim * 0.28,
       width / 2,
       height / 2,
-      width * 0.72,
+      maxDim * 0.72,
     );
     grad.addColorStop(0, "rgba(0,0,0,0)");
     grad.addColorStop(1, `rgba(0,0,0,${filter.vignette})`);
@@ -144,88 +147,9 @@ function canvasToJpeg(canvas: HTMLCanvasElement, quality = 0.93): Promise<Blob> 
   });
 }
 
-/** Ambil frame foto beresolusi tinggi (1440x1440) dari kamera. */
-export function captureSquareFrame(
-  video: HTMLVideoElement,
-  size = PHOTO_CAPTURE_SIZE,
-  mirror = false,
-  filter?: CameraFilter,
-): Promise<Blob> {
-  const vw = video.videoWidth || size;
-  const vh = video.videoHeight || size;
-  const side = Math.min(vw, vh);
-  const sx = (vw - side) / 2;
-  const sy = (vh - side) / 2;
-  const out = size;
-
-  const canvas = document.createElement("canvas");
-  canvas.width = out;
-  canvas.height = out;
-  const ctx = canvas.getContext("2d");
-  if (!ctx) return Promise.reject(new Error("Canvas tidak didukung"));
-  ctx.imageSmoothingEnabled = true;
-  ctx.imageSmoothingQuality = "high";
-
-  ctx.save();
-  if (filter && filter.css !== "none") {
-    ctx.filter = filter.css;
-  }
-  if (mirror) {
-    ctx.translate(out, 0);
-    ctx.scale(-1, 1);
-  }
-  ctx.drawImage(video, sx, sy, side, side, 0, 0, out, out);
-  ctx.restore();
-
-  if (filter && filter.id !== "normal") {
-    applyFilterEffectOnCanvas(ctx, out, out, filter);
-  }
-
-  return canvasToJpeg(canvas);
-}
-
-/**
- * Gabungkan 2 foto beresolusi tinggi (1440x1440):
- * - Kamera Belakang = Bingkai Besar
- * - Kamera Depan = Bingkai Kecil di Pojok Kiri Atas
- */
-export async function composeDualCameraPhoto(
-  backPhotoBlob: Blob,
-  frontVideo: HTMLVideoElement,
-  size = PHOTO_CAPTURE_SIZE,
-  mirrorFront = true,
-  filter?: CameraFilter,
-): Promise<Blob> {
-  const backBitmap = await createImageBitmap(backPhotoBlob);
-  const out = size;
-
-  const canvas = document.createElement("canvas");
-  canvas.width = out;
-  canvas.height = out;
-  const ctx = canvas.getContext("2d");
-  if (!ctx) {
-    backBitmap.close();
-    throw new Error("Canvas tidak didukung");
-  }
-  ctx.imageSmoothingEnabled = true;
-  ctx.imageSmoothingQuality = "high";
-
-  // 1. Gambar Bingkai Besar (Kamera Belakang)
-  ctx.drawImage(backBitmap, 0, 0, out, out);
-  backBitmap.close();
-
-  // 2. Gambar Bingkai Kecil di Kiri Atas (Kamera Depan)
-  const pipX = Math.round(out * 0.065);
-  const pipY = Math.round(out * 0.065);
-  const pipW = Math.round(out * 0.28);
-  const pipH = Math.round(out * 0.35);
-  const pipR = Math.round(out * 0.042);
-
-  const vw = frontVideo.videoWidth || out;
-  const vh = frontVideo.videoHeight || out;
-  const targetAspect = pipW / pipH;
+function getCoverCrop(vw: number, vh: number, targetW: number, targetH: number) {
+  const targetAspect = targetW / targetH;
   const videoAspect = vw / vh;
-
   let sx = 0;
   let sy = 0;
   let sw = vw;
@@ -237,17 +161,112 @@ export async function composeDualCameraPhoto(
     sh = vw / targetAspect;
     sy = (vh - sh) / 2;
   }
+  return { sx, sy, sw, sh };
+}
+
+/** Ambil frame foto portrait mobile 4:5 (1152x1440) dari kamera agar pas 100% di kartu mobile. */
+export function captureSquareFrame(
+  video: HTMLVideoElement,
+  mirror = false,
+  filter?: CameraFilter,
+): Promise<Blob> {
+  const outW = PHOTO_WIDTH;
+  const outH = PHOTO_HEIGHT;
+  const vw = video.videoWidth || outW;
+  const vh = video.videoHeight || outH;
+  const { sx, sy, sw, sh } = getCoverCrop(vw, vh, outW, outH);
+
+  const canvas = document.createElement("canvas");
+  canvas.width = outW;
+  canvas.height = outH;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return Promise.reject(new Error("Canvas tidak didukung"));
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
 
   ctx.save();
-  ctx.shadowColor = "rgba(0, 0, 0, 0.45)";
-  ctx.shadowBlur = Math.round(out * 0.022);
-  ctx.shadowOffsetY = Math.round(out * 0.008);
+  if (filter && filter.css !== "none") {
+    ctx.filter = filter.css;
+  }
+  if (mirror) {
+    ctx.translate(outW, 0);
+    ctx.scale(-1, 1);
+  }
+  ctx.drawImage(video, sx, sy, sw, sh, 0, 0, outW, outH);
+  ctx.restore();
+
+  if (filter && filter.id !== "normal") {
+    applyFilterEffectOnCanvas(ctx, outW, outH, filter);
+  }
+
+  return canvasToJpeg(canvas);
+}
+
+/**
+ * Gabungkan 2 foto dengan rasio 4:5 Portrait Mobile (1152x1440) sehingga
+ * Bingkai Kecil di Pojok Kiri Atas TIDAK PERNAH terpotong di layar HP:
+ * - Kamera Belakang = Bingkai Besar (1152x1440)
+ * - Kamera Depan = Bingkai Kecil utuh di Pojok Kiri Atas
+ */
+export async function composeDualCameraPhoto(
+  backPhotoBlob: Blob,
+  frontVideo: HTMLVideoElement,
+  mirrorFront = true,
+  filter?: CameraFilter,
+): Promise<Blob> {
+  const backBitmap = await createImageBitmap(backPhotoBlob);
+  const outW = PHOTO_WIDTH;
+  const outH = PHOTO_HEIGHT;
+
+  const canvas = document.createElement("canvas");
+  canvas.width = outW;
+  canvas.height = outH;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) {
+    backBitmap.close();
+    throw new Error("Canvas tidak didukung");
+  }
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
+
+  // 1. Gambar Bingkai Besar (Kamera Belakang)
+  const backCrop = getCoverCrop(backBitmap.width, backBitmap.height, outW, outH);
+  ctx.drawImage(
+    backBitmap,
+    backCrop.sx,
+    backCrop.sy,
+    backCrop.sw,
+    backCrop.sh,
+    0,
+    0,
+    outW,
+    outH,
+  );
+  backBitmap.close();
+
+  // 2. Gambar Bingkai Kecil di Kiri Atas (Kamera Depan) dengan jarak aman dari sudut lengkung kartu
+  const pipX = Math.round(outW * 0.06);
+  const pipY = Math.round(outH * 0.05);
+  const pipW = Math.round(outW * 0.30);
+  const pipH = Math.round(outH * 0.31);
+  const pipR = Math.round(outW * 0.042);
+
+  const vw = frontVideo.videoWidth || outW;
+  const vh = frontVideo.videoHeight || outH;
+  const { sx, sy, sw, sh } = getCoverCrop(vw, vh, pipW, pipH);
+
+  // Bayangan lembut di belakang bingkai kecil
+  ctx.save();
+  ctx.shadowColor = "rgba(0, 0, 0, 0.55)";
+  ctx.shadowBlur = Math.round(outW * 0.025);
+  ctx.shadowOffsetY = Math.round(outW * 0.008);
   ctx.beginPath();
   ctx.roundRect(pipX, pipY, pipW, pipH, pipR);
   ctx.fillStyle = "#161618";
   ctx.fill();
   ctx.restore();
 
+  // Isi foto kamera depan di dalam bingkai kecil
   ctx.save();
   ctx.beginPath();
   ctx.roundRect(pipX, pipY, pipW, pipH, pipR);
@@ -261,16 +280,17 @@ export async function composeDualCameraPhoto(
   }
   ctx.restore();
 
+  // Garis tepi utuh di sekeliling bingkai kecil
   ctx.save();
   ctx.beginPath();
   ctx.roundRect(pipX, pipY, pipW, pipH, pipR);
-  ctx.lineWidth = Math.max(4, Math.round(out * 0.0045));
-  ctx.strokeStyle = "rgba(15, 15, 18, 0.85)";
+  ctx.lineWidth = Math.max(5, Math.round(outW * 0.005));
+  ctx.strokeStyle = "rgba(18, 18, 22, 0.9)";
   ctx.stroke();
   ctx.restore();
 
   if (filter && filter.id !== "normal") {
-    applyFilterEffectOnCanvas(ctx, out, out, filter);
+    applyFilterEffectOnCanvas(ctx, outW, outH, filter);
   }
 
   return canvasToJpeg(canvas);
@@ -308,7 +328,7 @@ export async function applyFilterToImageBlob(
 }
 
 /** Perkecil gambar dari galeri ke resolusi tajam 1440px. */
-export async function resizeImage(file: Blob, maxSide = PHOTO_CAPTURE_SIZE): Promise<Blob> {
+export async function resizeImage(file: Blob, maxSide = PHOTO_HEIGHT): Promise<Blob> {
   const bitmap = await createImageBitmap(file);
   const scale = Math.min(1, maxSide / Math.max(bitmap.width, bitmap.height));
   const w = Math.round(bitmap.width * scale);

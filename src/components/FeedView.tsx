@@ -150,9 +150,9 @@ function FeedItem({
   return (
     <section
       data-id={moment.id}
-      className="flex h-full snap-start flex-col justify-between gap-2.5 px-3 pt-1 pb-24"
+      className="flex h-full snap-start flex-col items-center justify-between gap-2 px-3 pt-1 pb-24"
     >
-      <div className="relative w-full flex-1 min-h-[370px] max-h-[540px] overflow-hidden rounded-[44px] border border-white/10 bg-panel shadow-2xl">
+      <div className="relative aspect-[4/5] w-full max-h-[64dvh] overflow-hidden rounded-[40px] border border-white/10 bg-panel shadow-2xl">
         <MomentMedia moment={moment} />
 
         {/* Emoji melayang */}
