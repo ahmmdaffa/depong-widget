@@ -343,6 +343,26 @@ export async function fetchAdminMoments(): Promise<Moment[]> {
   return (data ?? []) as unknown as Moment[];
 }
 
+/** Ambil daftar akun + galeri foto dalam satu request tunggal untuk Dashboard Super Admin. */
+export async function fetchAdminSnapshot(): Promise<{
+  users: AdminUserSummary[];
+  moments: Moment[];
+}> {
+  if (!isSupabaseConfigured) {
+    const store = await syncWithServerStore();
+    const accMap = new Map(store.accounts.map((a) => [a.id, toPublicProfile(a)]));
+    return {
+      users: store.accounts,
+      moments: store.moments.map((m) => ({
+        ...m,
+        profile: m.profile ?? accMap.get(m.user_id) ?? null,
+      })),
+    };
+  }
+  const [users, moments] = await Promise.all([fetchAdminUsers(), fetchAdminMoments()]);
+  return { users, moments };
+}
+
 /** Hapus akun pengguna dari Dashboard Super Admin. */
 export async function deleteAdminUser(userId: string): Promise<void> {
   if (!isSupabaseConfigured) {

@@ -90,6 +90,7 @@ export async function POST(req: Request) {
   };
 
   const store = await readStore();
+  const missingMediaIds: string[] = [];
 
   if (body.clientStore) {
     const cs = body.clientStore;
@@ -113,7 +114,15 @@ export async function POST(req: Request) {
       const byId = new Map(store.accounts.map((a) => [a.id, a]));
       for (const acc of cs.accounts) {
         if (!deleted.has(acc.id)) {
-          byId.set(acc.id, { ...byId.get(acc.id), ...acc });
+          const prev = byId.get(acc.id);
+          byId.set(acc.id, {
+            ...prev,
+            ...acc,
+            last_active_at:
+              prev && prev.last_active_at > acc.last_active_at
+                ? prev.last_active_at
+                : acc.last_active_at,
+          });
         }
       }
       store.accounts = [...byId.values()];
@@ -133,18 +142,19 @@ export async function POST(req: Request) {
         }
         const existing = byId.get(m.id);
         if (existing) {
+          const reactionMap = new Map(existing.reactions.map((r) => [r.id, r]));
+          for (const r of m.reactions ?? []) reactionMap.set(r.id, r);
           byId.set(m.id, {
             ...existing,
             ...m,
             media_path:
               m.media_path !== MEDIA_PLACEHOLDER ? m.media_path : existing.media_path,
-            reactions:
-              (m.reactions?.length ?? 0) >= (existing.reactions?.length ?? 0)
-                ? m.reactions
-                : existing.reactions,
+            reactions: [...reactionMap.values()],
           });
         } else if (m.media_path !== MEDIA_PLACEHOLDER) {
           byId.set(m.id, m);
+        } else {
+          missingMediaIds.push(m.id);
         }
       }
       store.moments = [...byId.values()]
@@ -241,5 +251,5 @@ export async function POST(req: Request) {
   recomputeStats(store);
   await writeStore(store);
 
-  return NextResponse.json(store);
+  return NextResponse.json({ ...store, missingMediaIds });
 }

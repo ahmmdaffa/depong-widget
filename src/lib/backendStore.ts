@@ -2,9 +2,11 @@ import {
   coerceStore,
   emptyStore,
   friendIdsOf,
+  isFriendshipActive,
   MEDIA_PLACEHOLDER,
   type StoredAccount,
   type StoreShape,
+  type SyncResponse,
 } from "./storeTypes";
 import type {
   AdminUserSummary,
@@ -19,6 +21,7 @@ const SUPER_ADMIN_KEY = "depong_super_admin_session_v1";
 const CHANNEL_NAME = "depong_live_channel_v1";
 
 let memoryStore: StoreShape | null = null;
+let inFlightSync: Promise<StoreShape> | null = null;
 const serverSyncedMomentIds = new Set<string>();
 
 export const SUPER_ADMIN_EMAIL = "admin123@gmail.com";
@@ -73,7 +76,7 @@ export function saveLocalStore(store: StoreShape, broadcast = true): void {
 
   const activeUid = window.localStorage.getItem(SESSION_KEY);
   let forLocalStorage = store;
-  if (activeUid) {
+  if (activeUid && !isSuperAdminAuthenticated()) {
     const activeFriends = friendIdsOf(store, activeUid);
     forLocalStorage = {
       ...store,
@@ -132,8 +135,118 @@ export function subscribeStoreChanges(onChange: () => void): () => void {
   };
 }
 
-export async function syncWithServerStore(
-  action = "sync",
+/** Gabungkan state lokal & remote secara aman agar instance serverless berbeda tidak membuat foto berkedip hilang. */
+function mergeStores(local: StoreShape, remote: StoreShape): StoreShape {
+  const deletedIds = [...new Set([...local.deletedIds, ...remote.deletedIds])];
+  const deletedSet = new Set(deletedIds);
+
+  const deletedMomentIds = [
+    ...new Set([...local.deletedMomentIds, ...remote.deletedMomentIds]),
+  ];
+  const deletedMomentSet = new Set(deletedMomentIds);
+
+  const removedFriends: Record<string, string> = { ...local.removedFriends };
+  for (const [k, v] of Object.entries(remote.removedFriends)) {
+    const cur = removedFriends[k];
+    if (!cur || v > cur) removedFriends[k] = v;
+  }
+
+  // Gabungkan akun
+  const accMap = new Map<string, StoredAccount>();
+  for (const acc of [...local.accounts, ...remote.accounts]) {
+    if (deletedSet.has(acc.id)) continue;
+    const prev = accMap.get(acc.id);
+    if (!prev) {
+      accMap.set(acc.id, { ...acc });
+    } else {
+      accMap.set(acc.id, {
+        ...prev,
+        ...acc,
+        last_active_at:
+          prev.last_active_at > acc.last_active_at ? prev.last_active_at : acc.last_active_at,
+      });
+    }
+  }
+
+  // Gabungkan pertemanan aktif
+  const fKey = (f: { user_id: string; friend_id: string }) => `${f.user_id}:${f.friend_id}`;
+  const fMap = new Map<string, StoreShape["friendships"][number]>();
+  for (const f of [...local.friendships, ...remote.friendships]) {
+    if (deletedSet.has(f.user_id) || deletedSet.has(f.friend_id)) continue;
+    if (!isFriendshipActive(f, removedFriends)) continue;
+    const k = fKey(f);
+    const prev = fMap.get(k);
+    if (!prev || f.created_at > prev.created_at) fMap.set(k, f);
+  }
+  const friendships = [...fMap.values()];
+
+  // Gabungkan momen foto (pertahankan media valid dari salah satu sisi jika tidak dihapus)
+  const mMap = new Map<string, Moment>();
+  for (const m of [...local.moments, ...remote.moments]) {
+    if (
+      deletedSet.has(m.user_id) ||
+      deletedMomentSet.has(m.id) ||
+      !m.media_path ||
+      m.media_path === MEDIA_PLACEHOLDER ||
+      m.media_path.startsWith("blob:") ||
+      m.media_path.startsWith("data:video/")
+    ) {
+      continue;
+    }
+    const prev = mMap.get(m.id);
+    if (!prev) {
+      mMap.set(m.id, m);
+    } else {
+      const rMap = new Map(prev.reactions.map((r) => [r.id, r]));
+      for (const r of m.reactions ?? []) rMap.set(r.id, r);
+      mMap.set(m.id, {
+        ...prev,
+        ...m,
+        media_path: m.media_path !== MEDIA_PLACEHOLDER ? m.media_path : prev.media_path,
+        reactions: [...rMap.values()],
+      });
+    }
+  }
+  const moments = [...mMap.values()]
+    .sort((a, b) => b.created_at.localeCompare(a.created_at))
+    .slice(0, 120);
+
+  // Gabungkan balasan
+  const rMap = new Map<string, StoreShape["replies"][number]>();
+  for (const r of [...local.replies, ...remote.replies]) {
+    if (!deletedMomentSet.has(r.moment_id)) rMap.set(r.id, r);
+  }
+  const replies = [...rMap.values()].sort((a, b) => a.created_at.localeCompare(b.created_at));
+
+  // Hitung ulang statistik akun agar selalu sinkron dengan jumlah foto & sahabat
+  const accounts = [...accMap.values()].map((acc) => {
+    const userMoments = moments.filter((m) => m.user_id === acc.id);
+    const latest = userMoments.map((m) => m.created_at).sort().at(-1);
+    const activeFriends = new Set(
+      friendships.filter((f) => f.user_id === acc.id).map((f) => f.friend_id),
+    );
+    return {
+      ...acc,
+      moments_count: userMoments.length,
+      friends_count: activeFriends.size,
+      last_active_at: latest && latest > acc.last_active_at ? latest : acc.last_active_at,
+    };
+  });
+
+  return {
+    accounts,
+    friendships,
+    moments,
+    replies,
+    deletedIds,
+    deletedMomentIds,
+    removedFriends,
+    updatedAt: Math.max(local.updatedAt, remote.updatedAt),
+  };
+}
+
+async function runSyncRequest(
+  action: string,
   payload?: Record<string, unknown>,
 ): Promise<StoreShape> {
   const local = loadLocalStore();
@@ -159,21 +272,41 @@ export async function syncWithServerStore(
       }),
     });
     if (res.ok) {
-      const remote = coerceStore(await res.json());
+      const json = (await res.json()) as SyncResponse;
+      const remote = coerceStore(json);
       if (remote) {
+        for (const missingId of json.missingMediaIds ?? []) {
+          serverSyncedMomentIds.delete(missingId);
+        }
         for (const m of remote.moments) {
           if (m.media_path && m.media_path !== MEDIA_PLACEHOLDER) {
             serverSyncedMomentIds.add(m.id);
           }
         }
-        saveLocalStore(remote, false);
-        return remote;
+        const merged = mergeStores(local, remote);
+        saveLocalStore(merged, false);
+        return merged;
       }
     }
   } catch {
     // Jika offline, gunakan local store
   }
   return local;
+}
+
+export async function syncWithServerStore(
+  action = "sync",
+  payload?: Record<string, unknown>,
+): Promise<StoreShape> {
+  if (action === "sync" && !payload) {
+    if (!inFlightSync) {
+      inFlightSync = runSyncRequest("sync").finally(() => {
+        inFlightSync = null;
+      });
+    }
+    return inFlightSync;
+  }
+  return runSyncRequest(action, payload);
 }
 
 export function getActiveSessionUserId(): string | null {

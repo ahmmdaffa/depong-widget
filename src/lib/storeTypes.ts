@@ -29,14 +29,12 @@ export interface StoreShape {
 }
 
 export interface SyncResponse extends StoreShape {
-  /** Id momen yang file fotonya sudah tersimpan di server. */
-  mediaIds: string[];
+  /** Id momen yang dikirim placeholder oleh client tetapi belum ada di instance server ini. */
+  missingMediaIds?: string[];
 }
 
 /** Penanda ringan agar foto (base64) yang sudah dimiliki tidak dikirim ulang. */
 export const MEDIA_PLACEHOLDER = "__SERVER_CACHED__";
-/** Viewer khusus Super Admin: menerima semua momen. */
-export const ADMIN_VIEWER = "__admin__";
 
 export function friendPairKey(a: string, b: string): string {
   return a < b ? `${a}:${b}` : `${b}:${a}`;

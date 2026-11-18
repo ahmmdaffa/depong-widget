@@ -6,8 +6,7 @@ import {
   deleteAdminUser,
   deleteMoment,
   errorMessage,
-  fetchAdminMoments,
-  fetchAdminUsers,
+  fetchAdminSnapshot,
 } from "@/lib/api";
 import {
   isSuperAdminAuthenticated,
@@ -80,10 +79,7 @@ export default function AdminDashboard() {
 
   const refreshAdminData = useCallback(async () => {
     try {
-      const [userList, photoList] = await Promise.all([
-        fetchAdminUsers(),
-        fetchAdminMoments(),
-      ]);
+      const { users: userList, moments: photoList } = await fetchAdminSnapshot();
       setUsers(userList);
       setPhotos(photoList);
       setNowMs(Date.now());
@@ -106,8 +102,8 @@ export default function AdminDashboard() {
   useEffect(() => {
     if (!unlocked) return;
     let active = true;
-    Promise.all([fetchAdminUsers(), fetchAdminMoments()])
-      .then(([userList, photoList]) => {
+    fetchAdminSnapshot()
+      .then(({ users: userList, moments: photoList }) => {
         if (!active) return;
         setUsers(userList);
         setPhotos(photoList);
