@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { errorMessage, uploadMoment } from "@/lib/api";
 import {
+  applyFilterEffectOnCanvas,
+  applyFilterToImageBlob,
   baseMime,
   CAMERA_FILTERS,
   captureSquareFrame,
@@ -32,6 +34,7 @@ interface Captured {
   type: MediaType;
   duration: number | null;
   mime: string;
+  bakedFilterId: string;
 }
 
 const RING_RADIUS = 36;
@@ -74,6 +77,7 @@ export default function CameraView({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const capturedUrlRef = useRef<string | null>(null);
   const swipeStartXRef = useRef<number | null>(null);
+  const swipeCurrentXRef = useRef<number | null>(null);
 
   const [mode, setMode] = useState<MediaType>("photo");
   const [facing, setFacing] = useState<"user" | "environment">("user");
@@ -90,13 +94,13 @@ export default function CameraView({
 
   // Filter kamera (index 0 = paling kiri = Normal)
   const [filterIdx, setFilterIdx] = useState(0);
-  const [showFilterBanner, setShowFilterBanner] = useState(false);
+  const [showFilterBanner, setShowFilterBanner] = useState(true);
   const activeFilter = CAMERA_FILTERS[filterIdx] ?? CAMERA_FILTERS[0];
 
   const triggerFilterBanner = useCallback(() => {
     setShowFilterBanner(true);
     window.clearTimeout(bannerTimerRef.current);
-    bannerTimerRef.current = window.setTimeout(() => setShowFilterBanner(false), 1400);
+    bannerTimerRef.current = window.setTimeout(() => setShowFilterBanner(false), 1800);
   }, []);
 
   const selectFilterIndex = useCallback(
@@ -122,7 +126,6 @@ export default function CameraView({
 
         let stream: MediaStream;
         try {
-          // Utamakan resolusi Full HD 1080p agar hasil foto & video 7s tajam dan tidak pecah
           stream = await navigator.mediaDevices.getUserMedia({
             video: {
               facingMode: facing,
@@ -133,7 +136,6 @@ export default function CameraView({
             audio: false,
           });
         } catch {
-          // Fallback untuk perangkat dengan kamera standar
           stream = await navigator.mediaDevices.getUserMedia({
             video: {
               facingMode: facing,
@@ -240,40 +242,50 @@ export default function CameraView({
   }
 
   // ---------- Swipe Kanan / Kiri pada Tengah Gambar untuk Ganti Filter ----------
-  function handleSwipeStart(clientX: number) {
-    if (captured) return;
+  function onSwipeStart(clientX: number) {
     swipeStartXRef.current = clientX;
+    swipeCurrentXRef.current = clientX;
   }
 
-  function handleSwipeEnd(clientX: number) {
-    if (captured || swipeStartXRef.current === null) return;
-    const deltaX = clientX - swipeStartXRef.current;
+  function onSwipeMove(clientX: number) {
+    if (swipeStartXRef.current === null) return;
+    swipeCurrentXRef.current = clientX;
+  }
+
+  function onSwipeEnd(clientX?: number) {
+    if (swipeStartXRef.current === null) return;
+    const endX = clientX ?? swipeCurrentXRef.current ?? swipeStartXRef.current;
+    const deltaX = endX - swipeStartXRef.current;
     swipeStartXRef.current = null;
-    if (Math.abs(deltaX) < 36) return;
+    swipeCurrentXRef.current = null;
+
+    if (Math.abs(deltaX) < 30) return;
 
     if (deltaX < 0) {
-      // Swipe ke kiri -> maju ke filter berikutnya
+      // Geser ke kiri -> maju ke filter berikutnya
       selectFilterIndex(filterIdx + 1);
     } else {
-      // Swipe ke kanan -> mundur ke arah paling kiri (Normal)
+      // Geser ke kanan -> kembali ke arah paling kiri (Normal)
       selectFilterIndex(filterIdx - 1);
     }
   }
 
-  // ---------- Foto Resolusi Tinggi + Filter ----------
+  // ---------- Foto Resolusi Tinggi ----------
   async function takePhoto() {
     const video = videoRef.current;
     if (!video || !video.videoWidth) return;
     try {
-      const blob = await flashThen(() =>
-        captureSquareFrame(video, 1440, facing === "user", activeFilter.css),
+      // Simpan frame dasar tanpa filter dulu supaya di layar preview user tetap bisa ganti-ganti filter!
+      const rawBlob = await flashThen(() =>
+        captureSquareFrame(video, 1440, facing === "user", CAMERA_FILTERS[0]),
       );
       showCaptured({
-        blob,
-        url: URL.createObjectURL(blob),
+        blob: rawBlob,
+        url: URL.createObjectURL(rawBlob),
         type: "photo",
         duration: null,
         mime: "image/jpeg",
+        bakedFilterId: "normal",
       });
     } catch (err) {
       notify(errorMessage(err));
@@ -303,12 +315,12 @@ export default function CameraView({
 
     const audio = await acquireAudio();
     let videoTracks = stream.getVideoTracks();
+    const chosenFilter = activeFilter;
 
-    // Jika memakai filter atau kamera depan, rekam lewat canvas HD 1080x1080 agar filter & crop persegi ikut terekam tajam
     if (
       videoEl.videoWidth > 0 &&
       typeof HTMLCanvasElement.prototype.captureStream === "function" &&
-      (activeFilter.css !== "none" || facing === "user")
+      (chosenFilter.id !== "normal" || facing === "user")
     ) {
       const vw = videoEl.videoWidth;
       const vh = videoEl.videoHeight;
@@ -326,12 +338,11 @@ export default function CameraView({
         ctx.imageSmoothingEnabled = true;
         ctx.imageSmoothingQuality = "high";
         const mirror = facing === "user";
-        const filterStr = activeFilter.css;
 
         const renderFrame = () => {
           ctx.save();
-          if (filterStr && filterStr !== "none") {
-            ctx.filter = filterStr;
+          if (chosenFilter.css !== "none") {
+            ctx.filter = chosenFilter.css;
           }
           if (mirror) {
             ctx.translate(outSide, 0);
@@ -339,6 +350,10 @@ export default function CameraView({
           }
           ctx.drawImage(videoEl, sx, sy, side, side, 0, 0, outSide, outSide);
           ctx.restore();
+
+          if (chosenFilter.id !== "normal") {
+            applyFilterEffectOnCanvas(ctx, outSide, outSide, chosenFilter);
+          }
           filterCanvasRafRef.current = requestAnimationFrame(renderFrame);
         };
         renderFrame();
@@ -383,6 +398,7 @@ export default function CameraView({
         type: "video",
         duration: round1(Math.min(MAX_VIDEO_SECONDS, elapsed)),
         mime,
+        bakedFilterId: chosenFilter.id,
       });
     };
 
@@ -426,6 +442,7 @@ export default function CameraView({
           type: "photo",
           duration: null,
           mime: "image/jpeg",
+          bakedFilterId: "normal",
         });
       } else if (file.type.startsWith("video/")) {
         const duration = await getVideoDuration(file);
@@ -445,6 +462,7 @@ export default function CameraView({
           type: "video",
           duration: round1(duration),
           mime: file.type,
+          bakedFilterId: "normal",
         });
       } else {
         notify("Pilih foto atau video ya");
@@ -454,17 +472,32 @@ export default function CameraView({
     }
   }
 
+  // ---------- Siapkan Blob Final (Bake Filter untuk Foto) ----------
+  async function getFinalBlob(): Promise<Blob> {
+    if (!captured) throw new Error("Tidak ada media");
+    if (
+      captured.type === "photo" &&
+      activeFilter.id !== "normal" &&
+      captured.bakedFilterId !== activeFilter.id
+    ) {
+      return applyFilterToImageBlob(captured.blob, activeFilter);
+    }
+    return captured.blob;
+  }
+
   // ---------- Kirim ----------
   async function send() {
     if (!captured || sending) return;
-    if (captured.blob.size > MAX_UPLOAD_BYTES) {
-      notify("File terlalu besar (maks 10 MB)");
-      return;
-    }
     setSending(true);
     try {
+      const finalBlob = await getFinalBlob();
+      if (finalBlob.size > MAX_UPLOAD_BYTES) {
+        notify("File terlalu besar (maks 10 MB)");
+        return;
+      }
+
       if (onLocalMoment) {
-        const persistedUrl = URL.createObjectURL(captured.blob);
+        const persistedUrl = URL.createObjectURL(finalBlob);
         onLocalMoment({
           url: persistedUrl,
           mediaType: captured.type,
@@ -478,7 +511,7 @@ export default function CameraView({
       }
       await uploadMoment({
         userId,
-        blob: captured.blob,
+        blob: finalBlob,
         mime: captured.mime,
         mediaType: captured.type,
         duration: captured.duration,
@@ -494,32 +527,50 @@ export default function CameraView({
     }
   }
 
-  function download() {
+  async function download() {
     if (!captured) return;
+    const finalBlob = await getFinalBlob();
+    const url = URL.createObjectURL(finalBlob);
     const a = document.createElement("a");
-    a.href = captured.url;
+    a.href = url;
     a.download = `depong-${Date.now()}.${extFromMime(captured.mime)}`;
     a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
 
   const elapsedSec = Math.min(MAX_VIDEO_SECONDS, Math.floor(progress * MAX_VIDEO_SECONDS));
+  const shouldApplyPreviewFilter =
+    !captured || captured.bakedFilterId !== activeFilter.id;
+
+  const mediaFilterStyle =
+    shouldApplyPreviewFilter && activeFilter.css !== "none"
+      ? {
+          filter: activeFilter.css,
+          WebkitFilter: activeFilter.css,
+          transform: !captured && facing === "user" ? "scaleX(-1) translateZ(0)" : "translateZ(0)",
+        }
+      : {
+          transform: !captured && facing === "user" ? "scaleX(-1) translateZ(0)" : "translateZ(0)",
+        };
 
   return (
     <div className="flex h-full flex-col items-center justify-between gap-4 px-4 pt-2 pb-28">
       {/* Viewfinder squircle (Mendukung Swipe Kanan/Kiri untuk Filter) */}
       <div
-        onTouchStart={(e) => handleSwipeStart(e.touches[0].clientX)}
-        onTouchEnd={(e) => handleSwipeEnd(e.changedTouches[0].clientX)}
-        onMouseDown={(e) => handleSwipeStart(e.clientX)}
-        onMouseUp={(e) => handleSwipeEnd(e.clientX)}
-        className="relative aspect-square w-full overflow-hidden rounded-[44px] border border-white/10 bg-panel shadow-2xl"
+        onTouchStart={(e) => onSwipeStart(e.touches[0].clientX)}
+        onTouchMove={(e) => onSwipeMove(e.touches[0].clientX)}
+        onTouchEnd={(e) => onSwipeEnd(e.changedTouches[0]?.clientX)}
+        onMouseDown={(e) => onSwipeStart(e.clientX)}
+        onMouseMove={(e) => onSwipeMove(e.clientX)}
+        onMouseUp={(e) => onSwipeEnd(e.clientX)}
+        className="relative aspect-square w-full touch-pan-y overflow-hidden rounded-[44px] border border-white/10 bg-panel shadow-2xl select-none"
       >
         <video
           ref={videoRef}
-          style={{ filter: activeFilter.css !== "none" ? activeFilter.css : undefined }}
+          style={mediaFilterStyle}
           className={`h-full w-full object-cover transition-[filter] duration-200 ${
-            facing === "user" ? "-scale-x-100" : ""
-          } ${captured ? "invisible" : ""}`}
+            captured ? "invisible" : ""
+          }`}
           playsInline
           muted
           autoPlay
@@ -531,18 +582,50 @@ export default function CameraView({
             <img
               src={captured.url}
               alt="Pratinjau"
-              className="absolute inset-0 h-full w-full object-cover"
+              style={mediaFilterStyle}
+              className="absolute inset-0 h-full w-full object-cover transition-[filter] duration-200"
             />
           ) : (
             <video
               src={captured.url}
-              className="absolute inset-0 h-full w-full object-cover"
+              style={mediaFilterStyle}
+              className="absolute inset-0 h-full w-full object-cover transition-[filter] duration-200"
               playsInline
               autoPlay
               loop
               muted
             />
           ))}
+
+        {/* Overlay Color-Grading Live (Menjamin filter 100% terlihat di iOS Safari & semua HP) */}
+        {shouldApplyPreviewFilter && activeFilter.tint && activeFilter.tint[3] > 0 && (
+          <div
+            className="pointer-events-none absolute inset-0 transition-opacity duration-200"
+            style={{
+              backgroundColor: `rgba(${activeFilter.tint[0]}, ${activeFilter.tint[1]}, ${activeFilter.tint[2]}, ${activeFilter.tint[3]})`,
+              mixBlendMode: (activeFilter.blendMode as React.CSSProperties["mixBlendMode"]) ?? "overlay",
+            }}
+          />
+        )}
+
+        {shouldApplyPreviewFilter && activeFilter.id === "mono" && (
+          <div
+            className="pointer-events-none absolute inset-0"
+            style={{
+              backdropFilter: "grayscale(1) contrast(1.25)",
+              WebkitBackdropFilter: "grayscale(1) contrast(1.25)",
+            }}
+          />
+        )}
+
+        {shouldApplyPreviewFilter && activeFilter.vignette && activeFilter.vignette > 0 && (
+          <div
+            className="pointer-events-none absolute inset-0"
+            style={{
+              background: `radial-gradient(circle, rgba(0,0,0,0) 42%, rgba(0,0,0,${activeFilter.vignette}) 100%)`,
+            }}
+          />
+        )}
 
         {flashVisible && <div className="absolute inset-0 bg-white" />}
 
@@ -567,7 +650,7 @@ export default function CameraView({
 
         {/* Kontrol atas viewfinder */}
         {!captured && (
-          <div className="absolute inset-x-4 top-4 flex items-center justify-between">
+          <div className="absolute inset-x-4 top-4 z-10 flex items-center justify-between">
             <button
               onClick={() => setFlashOn((v) => !v)}
               className={`flex h-10 w-10 items-center justify-center rounded-full bg-black/45 backdrop-blur-md ${
@@ -589,12 +672,11 @@ export default function CameraView({
               </span>
             )}
 
-            {/* Reset cepat ke Normal jika sedang memakai filter */}
             {filterIdx > 0 ? (
               <button
+                type="button"
                 onClick={() => selectFilterIndex(0)}
-                className="rounded-full bg-gold px-2.5 py-1 text-[11px] font-extrabold text-black shadow"
-                title="Kembali ke Normal (Paling Kiri)"
+                className="rounded-full bg-gold px-3 py-1.5 text-xs font-extrabold text-black shadow-lg"
               >
                 Normal
               </button>
@@ -604,65 +686,61 @@ export default function CameraView({
           </div>
         )}
 
-        {/* Indikator Filter di Tengah Gambar saat di-swipe */}
-        {!captured && showFilterBanner && (
-          <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-1.5 bg-black/15">
-            <span className="rounded-full border border-white/20 bg-black/70 px-5 py-2 text-base font-extrabold text-gold shadow-2xl backdrop-blur-md">
-              {activeFilter.badge}
-            </span>
-            <span className="rounded-full bg-black/55 px-3 py-0.5 text-[11px] font-medium text-white/85 backdrop-blur-md">
-              {filterIdx === 0
-                ? "Swipe kiri untuk pilih filter →"
-                : "← Swipe ke paling kiri untuk Normal"}
-            </span>
+        {/* Kontrol Filter di Bagian Tengah Gambar (Swipe Kanan/Kiri & Tombol Panah) */}
+        {(cameraReady || captured) && !recording && (
+          <div className="pointer-events-none absolute inset-x-3 top-1/2 z-10 flex -translate-y-1/2 items-center justify-between">
+            <button
+              type="button"
+              onClick={() => selectFilterIndex(filterIdx - 1)}
+              disabled={filterIdx === 0}
+              className="pointer-events-auto flex h-9 w-9 items-center justify-center rounded-full border border-white/15 bg-black/45 text-white backdrop-blur-md transition active:scale-90 disabled:opacity-20"
+              aria-label="Geser ke filter kiri (Normal)"
+            >
+              <IconChevronLeft size={18} />
+            </button>
+
+            {showFilterBanner && (
+              <div className="flex flex-col items-center gap-1">
+                <span className="rounded-full border border-gold/40 bg-black/70 px-4 py-1.5 text-sm font-extrabold text-gold shadow-2xl backdrop-blur-md">
+                  {activeFilter.badge}
+                </span>
+                <span className="rounded-full bg-black/55 px-2.5 py-0.5 text-[10px] font-semibold text-white/85 backdrop-blur-md">
+                  {filterIdx === 0
+                    ? "Swipe kiri untuk ganti filter"
+                    : "← Swipe ke paling kiri untuk Normal"}
+                </span>
+              </div>
+            )}
+
+            <button
+              type="button"
+              onClick={() => selectFilterIndex(filterIdx + 1)}
+              disabled={filterIdx === CAMERA_FILTERS.length - 1}
+              className="pointer-events-auto flex h-9 w-9 items-center justify-center rounded-full border border-white/15 bg-black/45 text-white backdrop-blur-md transition active:scale-90 disabled:opacity-20"
+              aria-label="Geser ke filter kanan"
+            >
+              <IconChevronRight size={18} />
+            </button>
           </div>
         )}
 
-        {/* Bar Filter Swipe di Bagian Tengah-Bawah Gambar */}
-        {!captured && cameraReady && (
-          <div className="absolute inset-x-3 bottom-3.5 flex flex-col items-center gap-1.5">
-            <div className="flex items-center gap-1.5 rounded-full border border-white/15 bg-black/55 px-2.5 py-1 backdrop-blur-md">
-              <button
-                type="button"
-                onClick={() => selectFilterIndex(filterIdx - 1)}
-                disabled={filterIdx === 0}
-                className="flex h-6 w-6 items-center justify-center rounded-full text-white/85 disabled:opacity-30"
-                aria-label="Filter sebelumnya"
-              >
-                <IconChevronLeft size={14} />
-              </button>
-
-              <span className="min-w-[116px] text-center text-xs font-bold text-white">
-                {activeFilter.badge}
-              </span>
-
-              <button
-                type="button"
-                onClick={() => selectFilterIndex(filterIdx + 1)}
-                disabled={filterIdx === CAMERA_FILTERS.length - 1}
-                className="flex h-6 w-6 items-center justify-center rounded-full text-white/85 disabled:opacity-30"
-                aria-label="Filter berikutnya"
-              >
-                <IconChevronRight size={14} />
-              </button>
-            </div>
-
-            {/* Titik urutan filter (Titik paling kiri = Normal) */}
-            <div className="flex items-center gap-1.5">
+        {/* Deretan Pill Filter (Paling Kiri = Normal) */}
+        {!captured && cameraReady && !recording && (
+          <div className="absolute inset-x-3 bottom-3.5 z-10 flex flex-col items-center gap-1.5">
+            <div className="flex max-w-full items-center gap-1.5 overflow-x-auto rounded-full border border-white/15 bg-black/60 p-1 backdrop-blur-md no-scrollbar">
               {CAMERA_FILTERS.map((f, idx) => (
                 <button
                   key={f.id}
                   type="button"
                   onClick={() => selectFilterIndex(idx)}
-                  aria-label={f.name}
-                  className={`h-1.5 rounded-full transition-all ${
+                  className={`shrink-0 rounded-full px-3 py-1 text-xs font-bold transition ${
                     idx === filterIdx
-                      ? "w-5 bg-gold"
-                      : idx === 0
-                        ? "w-2 bg-white/70"
-                        : "w-1.5 bg-white/35"
+                      ? "bg-gold text-black shadow"
+                      : "text-white/80 hover:text-white"
                   }`}
-                />
+                >
+                  {f.badge}
+                </button>
               ))}
             </div>
           </div>
@@ -670,19 +748,19 @@ export default function CameraView({
 
         {/* Caption ala Locket saat pratinjau */}
         {captured && (
-          <div className="absolute inset-x-0 bottom-5 flex justify-center px-6">
+          <div className="absolute inset-x-0 bottom-5 z-10 flex justify-center px-6">
             <input
               value={caption}
               onChange={(e) => setCaption(e.target.value.slice(0, 60))}
               placeholder="Tambah pesan…"
               maxLength={60}
-              className="w-auto max-w-full min-w-[60%] rounded-full bg-black/55 px-4 py-2 text-center text-sm font-semibold text-white placeholder-white/60 outline-none backdrop-blur-md"
+              className="w-auto max-w-full min-w-[60%] rounded-full bg-black/60 px-4 py-2 text-center text-sm font-semibold text-white placeholder-white/60 outline-none backdrop-blur-md"
             />
           </div>
         )}
 
         {captured?.type === "video" && (
-          <span className="absolute top-4 left-4 rounded-full bg-black/55 px-3 py-1.5 text-xs font-semibold backdrop-blur-md">
+          <span className="absolute top-4 left-4 z-10 rounded-full bg-black/55 px-3 py-1.5 text-xs font-semibold backdrop-blur-md">
             🎥 HD {captured.duration?.toFixed(1)}s
           </span>
         )}
@@ -713,7 +791,7 @@ export default function CameraView({
               )}
             </button>
             <button
-              onClick={download}
+              onClick={() => void download()}
               disabled={sending}
               className="flex h-12 w-12 items-center justify-center rounded-full bg-panel-2 text-white"
               aria-label="Simpan ke perangkat"

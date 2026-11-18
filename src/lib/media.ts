@@ -6,6 +6,10 @@ export interface CameraFilter {
   name: string;
   badge: string;
   css: string;
+  /** Warna overlay (r, g, b, alpha) agar filter tetap terlihat jelas di iOS Safari & semua HP */
+  tint: [number, number, number, number] | null;
+  blendMode?: GlobalCompositeOperation;
+  vignette?: number;
 }
 
 /**
@@ -17,46 +21,127 @@ export const CAMERA_FILTERS: CameraFilter[] = [
   {
     id: "normal",
     name: "Normal",
-    badge: "Normal (Asli)",
+    badge: "Normal",
     css: "none",
+    tint: null,
   },
   {
     id: "golden",
     name: "Golden Hour",
     badge: "☀️ Golden Hour",
-    css: "sepia(0.26) saturate(1.38) contrast(1.06) brightness(1.04)",
+    css: "sepia(0.38) saturate(1.55) contrast(1.08) brightness(1.05)",
+    tint: [245, 176, 65, 0.22],
+    blendMode: "overlay",
+    vignette: 0.22,
   },
   {
     id: "vintage",
     name: "Vintage 90s",
     badge: "🎞️ Vintage 90s",
-    css: "contrast(1.12) brightness(0.98) saturate(0.84) sepia(0.22)",
+    css: "sepia(0.45) contrast(1.15) brightness(0.96) saturate(0.82)",
+    tint: [212, 163, 115, 0.26],
+    blendMode: "multiply",
+    vignette: 0.35,
   },
   {
     id: "soft",
     name: "Soft Glow",
     badge: "✨ Soft Glow",
-    css: "brightness(1.09) contrast(0.97) saturate(1.14)",
-  },
-  {
-    id: "cinema",
-    name: "Cinema Cool",
-    badge: "🎬 Cinema Cool",
-    css: "contrast(1.16) saturate(0.92) hue-rotate(-10deg)",
+    css: "brightness(1.14) contrast(0.95) saturate(1.22)",
+    tint: [255, 228, 230, 0.18],
+    blendMode: "screen",
+    vignette: 0.1,
   },
   {
     id: "sunset",
     name: "Sunset Rose",
     badge: "🌸 Sunset Rose",
-    css: "saturate(1.32) contrast(1.05) hue-rotate(-14deg) brightness(1.03)",
+    css: "saturate(1.48) contrast(1.08) hue-rotate(-18deg) brightness(1.04)",
+    tint: [244, 63, 94, 0.22],
+    blendMode: "soft-light",
+    vignette: 0.2,
+  },
+  {
+    id: "cinema",
+    name: "Cinema Cool",
+    badge: "🎬 Cinema Cool",
+    css: "contrast(1.2) saturate(1.1) hue-rotate(165deg) sepia(0.18)",
+    tint: [14, 165, 233, 0.22],
+    blendMode: "overlay",
+    vignette: 0.3,
   },
   {
     id: "mono",
     name: "Mono B&W",
     badge: "🖤 Mono B&W",
-    css: "grayscale(1) contrast(1.22) brightness(1.03)",
+    css: "grayscale(1) contrast(1.28) brightness(1.04)",
+    tint: [0, 0, 0, 0],
+    vignette: 0.32,
   },
 ];
+
+/**
+ * Terapkan efek filter langsung ke permukaan Canvas 2D.
+ * Mendukung browser yang tidak memiliki ctx.filter (seperti Safari iOS).
+ */
+export function applyFilterEffectOnCanvas(
+  ctx: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+  filter: CameraFilter,
+) {
+  if (!filter || filter.id === "normal") return;
+
+  // Untuk Mono B&W, konversi piksel grayscale + kontras agar 100% bekerja di iOS Safari
+  if (filter.id === "mono") {
+    try {
+      const imgData = ctx.getImageData(0, 0, width, height);
+      const d = imgData.data;
+      const contrast = 1.25;
+      const intercept = 128 * (1 - contrast);
+      for (let i = 0; i < d.length; i += 4) {
+        const lum = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+        const v = Math.max(0, Math.min(255, lum * contrast + intercept));
+        d[i] = v;
+        d[i + 1] = v;
+        d[i + 2] = v;
+      }
+      ctx.putImageData(imgData, 0, 0);
+    } catch {
+      // Abaikan jika canvas tainted
+    }
+  }
+
+  // Color tint grading layer
+  if (filter.tint && filter.tint[3] > 0) {
+    const [r, g, b, a] = filter.tint;
+    ctx.save();
+    if (filter.blendMode) {
+      ctx.globalCompositeOperation = filter.blendMode;
+    }
+    ctx.fillStyle = `rgba(${r}, ${g}, ${b}, ${a})`;
+    ctx.fillRect(0, 0, width, height);
+    ctx.restore();
+  }
+
+  // Soft vignette untuk kedalaman visual
+  if (filter.vignette && filter.vignette > 0) {
+    ctx.save();
+    const grad = ctx.createRadialGradient(
+      width / 2,
+      height / 2,
+      width * 0.28,
+      width / 2,
+      height / 2,
+      width * 0.72,
+    );
+    grad.addColorStop(0, "rgba(0,0,0,0)");
+    grad.addColorStop(1, `rgba(0,0,0,${filter.vignette})`);
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, width, height);
+    ctx.restore();
+  }
+}
 
 /** Pilih format rekaman terbaik. MP4/VP9 diutamakan agar tajam di iPhone & Android. */
 export function pickVideoMimeType(): string | undefined {
@@ -115,12 +200,12 @@ function canvasToJpeg(canvas: HTMLCanvasElement, quality = 0.94): Promise<Blob> 
   });
 }
 
-/** Ambil frame persegi beresolusi tinggi (crop tengah) dari video kamera beserta filter aktif. */
+/** Ambil frame persegi beresolusi tinggi (crop tengah) dari video kamera. */
 export function captureSquareFrame(
   video: HTMLVideoElement,
   size = 1440,
   mirror = false,
-  filterCss = "none",
+  filter?: CameraFilter,
 ): Promise<Blob> {
   const vw = video.videoWidth;
   const vh = video.videoHeight;
@@ -136,14 +221,53 @@ export function captureSquareFrame(
   if (!ctx) return Promise.reject(new Error("Canvas tidak didukung"));
   ctx.imageSmoothingEnabled = true;
   ctx.imageSmoothingQuality = "high";
-  if (filterCss && filterCss !== "none") {
-    ctx.filter = filterCss;
+
+  ctx.save();
+  if (filter && filter.css !== "none") {
+    ctx.filter = filter.css;
   }
   if (mirror) {
     ctx.translate(out, 0);
     ctx.scale(-1, 1);
   }
   ctx.drawImage(video, sx, sy, side, side, 0, 0, out, out);
+  ctx.restore();
+
+  if (filter && filter.id !== "normal") {
+    applyFilterEffectOnCanvas(ctx, out, out, filter);
+  }
+
+  return canvasToJpeg(canvas, 0.94);
+}
+
+/** Terapkan filter pada Blob gambar yang sudah diambil (misal saat user ganti filter di layar preview). */
+export async function applyFilterToImageBlob(
+  sourceBlob: Blob,
+  filter: CameraFilter,
+): Promise<Blob> {
+  if (!filter || filter.id === "normal") return sourceBlob;
+  const bitmap = await createImageBitmap(sourceBlob);
+  const w = bitmap.width;
+  const h = bitmap.height;
+  const canvas = document.createElement("canvas");
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) {
+    bitmap.close();
+    return sourceBlob;
+  }
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
+  ctx.save();
+  if (filter.css !== "none") {
+    ctx.filter = filter.css;
+  }
+  ctx.drawImage(bitmap, 0, 0, w, h);
+  ctx.restore();
+  bitmap.close();
+
+  applyFilterEffectOnCanvas(ctx, w, h, filter);
   return canvasToJpeg(canvas, 0.94);
 }
 
