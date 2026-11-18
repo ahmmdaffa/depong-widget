@@ -198,6 +198,15 @@ export default function AuthView({
             </button>
           </form>
         </div>
+
+        <div className="text-center">
+          <a
+            href="/admin"
+            className="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-panel px-4 py-2 text-xs font-semibold text-muted transition hover:border-gold/40 hover:text-gold"
+          >
+            <span>🛡️ Buka Dashboard Admin</span>
+          </a>
+        </div>
       </div>
     </div>
   );

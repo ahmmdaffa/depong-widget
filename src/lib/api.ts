@@ -1,6 +1,13 @@
 import { getSupabase, MEDIA_BUCKET } from "./supabase";
 import { baseMime, extFromMime } from "./media";
-import type { MediaType, Moment, Profile, PublicProfile, Reply } from "./types";
+import type {
+  AdminUserSummary,
+  MediaType,
+  Moment,
+  Profile,
+  PublicProfile,
+  Reply,
+} from "./types";
 
 const PROFILE_FIELDS = "id,username,display_name,avatar_url";
 
@@ -130,4 +137,48 @@ export async function fetchReplies(momentId: string): Promise<Reply[]> {
     .order("created_at", { ascending: true });
   if (error) throw error;
   return (data ?? []) as unknown as Reply[];
+}
+
+/** Ambil daftar seluruh user yang membuat akun untuk halaman Admin. */
+export async function fetchAdminUsers(): Promise<AdminUserSummary[]> {
+  const supabase = getSupabase();
+
+  // Coba panggil RPC admin_list_users terlebih dahulu (lengkap dengan statistik)
+  const rpcRes = await supabase.rpc("admin_list_users");
+  if (!rpcRes.error && Array.isArray(rpcRes.data)) {
+    return rpcRes.data.map((row) => ({
+      id: String(row.id),
+      username: String(row.username),
+      display_name: String(row.display_name),
+      email: row.email ? String(row.email) : null,
+      avatar_url: row.avatar_url ? String(row.avatar_url) : null,
+      invite_code: String(row.invite_code),
+      created_at: String(row.created_at),
+      moments_count: Number(row.moments_count ?? 0),
+      videos_count: Number(row.videos_count ?? 0),
+      friends_count: Number(row.friends_count ?? 0),
+      last_active_at: String(row.last_active_at ?? row.created_at),
+    }));
+  }
+
+  // Fallback langsung ke tabel profiles jika fungsi RPC belum dijalankan
+  const { data, error } = await supabase
+    .from("profiles")
+    .select("*")
+    .order("created_at", { ascending: false });
+  if (error) throw error;
+
+  return ((data ?? []) as Profile[]).map((p) => ({
+    id: p.id,
+    username: p.username,
+    display_name: p.display_name,
+    email: p.email ?? null,
+    avatar_url: p.avatar_url,
+    invite_code: p.invite_code,
+    created_at: p.created_at,
+    moments_count: 0,
+    videos_count: 0,
+    friends_count: 0,
+    last_active_at: p.created_at,
+  }));
 }

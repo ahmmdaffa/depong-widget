@@ -528,6 +528,12 @@ export default function DepongApp() {
                     Tutup
                   </button>
                 </div>
+                <a
+                  href="/admin"
+                  className="block w-full rounded-full border border-gold/30 bg-panel-2 py-3 text-center text-sm font-bold text-gold"
+                >
+                  🛡️ Buka Dashboard Admin
+                </a>
                 <button
                   onClick={() => {
                     setProfileOpen(false);

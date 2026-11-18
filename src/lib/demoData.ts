@@ -1,4 +1,4 @@
-import type { Moment, Profile, PublicProfile } from "./types";
+import type { AdminUserSummary, Moment, Profile, PublicProfile } from "./types";
 
 function svgSceneDataUrl(bg1: string, bg2: string, accent: string, emoji: string, label: string): string {
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="720" height="720" viewBox="0 0 720 720">
@@ -94,6 +94,93 @@ export function createInitialDemoMoments(): Moment[] {
       reactions: [
         { id: "r-5", user_id: "friend-aris", emoji: "🔥", created_at: new Date(now - 46 * 60 * 60 * 1000).toISOString() },
       ],
+    },
+  ];
+}
+
+export function createDemoAdminUsers(): AdminUserSummary[] {
+  const now = Date.now();
+  const h = 3600 * 1000;
+  const d = 24 * h;
+
+  return [
+    {
+      id: "demo-user-daffa",
+      username: "daffa_9f2a",
+      display_name: "Daffa",
+      email: "ahmmdaffa280904@gmail.com",
+      avatar_url: null,
+      invite_code: "daffa7s",
+      created_at: new Date(now - 2 * h).toISOString(),
+      moments_count: 14,
+      videos_count: 6,
+      friends_count: 4,
+      last_active_at: new Date(now - 10 * 60 * 1000).toISOString(),
+    },
+    {
+      id: "friend-dina",
+      username: "dina_s81c",
+      display_name: "Dina Safitri",
+      email: "dina.safitri@gmail.com",
+      avatar_url: null,
+      invite_code: "dina8821",
+      created_at: new Date(now - 18 * h).toISOString(),
+      moments_count: 22,
+      videos_count: 9,
+      friends_count: 5,
+      last_active_at: new Date(now - 13 * 60 * 1000).toISOString(),
+    },
+    {
+      id: "friend-raka",
+      username: "raka_p40e",
+      display_name: "Raka Pratama",
+      email: "rakapratama@outlook.com",
+      avatar_url: null,
+      invite_code: "raka409e",
+      created_at: new Date(now - 1.4 * d).toISOString(),
+      moments_count: 11,
+      videos_count: 4,
+      friends_count: 4,
+      last_active_at: new Date(now - 3 * h).toISOString(),
+    },
+    {
+      id: "friend-nadia",
+      username: "nadia_k19b",
+      display_name: "Nadia Kusuma",
+      email: "nadiakusuma@gmail.com",
+      avatar_url: null,
+      invite_code: "nadia19b",
+      created_at: new Date(now - 2.3 * d).toISOString(),
+      moments_count: 19,
+      videos_count: 8,
+      friends_count: 6,
+      last_active_at: new Date(now - 52 * 60 * 1000).toISOString(),
+    },
+    {
+      id: "friend-aris",
+      username: "aris_m77d",
+      display_name: "Aris Maulana",
+      email: "aris.maulana@yahoo.com",
+      avatar_url: null,
+      invite_code: "aris77dm",
+      created_at: new Date(now - 3.6 * d).toISOString(),
+      moments_count: 8,
+      videos_count: 2,
+      friends_count: 3,
+      last_active_at: new Date(now - 1.1 * d).toISOString(),
+    },
+    {
+      id: "friend-maya",
+      username: "maya_l04a",
+      display_name: "Maya Lestari",
+      email: "mayalestari@gmail.com",
+      avatar_url: null,
+      invite_code: "maya04al",
+      created_at: new Date(now - 5.2 * d).toISOString(),
+      moments_count: 15,
+      videos_count: 7,
+      friends_count: 5,
+      last_active_at: new Date(now - 6 * h).toISOString(),
     },
   ];
 }

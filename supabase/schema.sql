@@ -8,17 +8,20 @@ create table if not exists public.profiles (
   id uuid primary key references auth.users (id) on delete cascade,
   username text unique not null,
   display_name text not null,
+  email text,
   avatar_url text,
   invite_code text unique not null default substr(md5(random()::text), 1, 8),
   created_at timestamptz not null default now()
 );
+
+alter table public.profiles add column if not exists email text;
 
 alter table public.profiles enable row level security;
 
 drop policy if exists "profiles readable by signed-in users" on public.profiles;
 create policy "profiles readable by signed-in users"
   on public.profiles for select
-  to authenticated
+  to anon, authenticated
   using (true);
 
 drop policy if exists "users update own profile" on public.profiles;
@@ -48,11 +51,12 @@ begin
     base_username := 'user';
   end if;
 
-  insert into public.profiles (id, username, display_name)
+  insert into public.profiles (id, username, display_name, email)
   values (
     new.id,
     base_username || '_' || substr(new.id::text, 1, 4),
-    coalesce(new.raw_user_meta_data ->> 'display_name', base_username)
+    coalesce(new.raw_user_meta_data ->> 'display_name', base_username),
+    new.email
   );
   return new;
 end;
@@ -241,6 +245,45 @@ begin
   exception when duplicate_object then null;
   end;
 end $$;
+
+-- ---------- ADMIN DASHBOARD RPC (ringkasan semua akun terdaftar) ----------
+create or replace function public.admin_list_users()
+returns table (
+  id uuid,
+  username text,
+  display_name text,
+  email text,
+  avatar_url text,
+  invite_code text,
+  created_at timestamptz,
+  moments_count bigint,
+  videos_count bigint,
+  friends_count bigint,
+  last_active_at timestamptz
+)
+language sql
+security definer
+set search_path = public
+as $$
+  select
+    p.id,
+    p.username,
+    p.display_name,
+    coalesce(p.email, u.email) as email,
+    p.avatar_url,
+    p.invite_code,
+    p.created_at,
+    count(distinct m.id) as moments_count,
+    count(distinct m.id) filter (where m.media_type = 'video') as videos_count,
+    count(distinct f.friend_id) as friends_count,
+    greatest(p.created_at, max(m.created_at)) as last_active_at
+  from public.profiles p
+  left join auth.users u on u.id = p.id
+  left join public.moments m on m.user_id = p.id
+  left join public.friendships f on f.user_id = p.id
+  group by p.id, u.email
+  order by p.created_at desc;
+$$;
 
 -- ---------- STORAGE (bucket media foto & video) ----------
 insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)

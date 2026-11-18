@@ -8,8 +8,23 @@ export interface PublicProfile {
 }
 
 export interface Profile extends PublicProfile {
+  email?: string | null;
   invite_code: string;
   created_at: string;
+}
+
+export interface AdminUserSummary {
+  id: string;
+  username: string;
+  display_name: string;
+  email: string | null;
+  avatar_url: string | null;
+  invite_code: string;
+  created_at: string;
+  moments_count: number;
+  videos_count: number;
+  friends_count: number;
+  last_active_at: string;
 }
 
 export interface Reaction {
